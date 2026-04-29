@@ -20,6 +20,7 @@ import { DebugState, CumulativeUsage } from './components/DebugPanel.js';
 import { Header } from './components/Header.js';
 import { ChatPane, ChatMessage } from './components/ChatPane.js';
 import { MessageLog } from './components/MessageLog.js';
+import { StatsPanel } from './components/StatsPanel.js';
 import { InputBar } from './components/InputBar.js';
 import { StatusBar } from './components/StatusBar.js';
 
@@ -117,6 +118,7 @@ async function runChat() {
       agent={agent}
       profileName={profileName}
       modelName={profile.agent.model.model}
+      providerUrl={profile.agent.model.baseURL}
       withDebug={withDebug}
       debugPort={DEBUG_PORT}
     />
@@ -185,11 +187,12 @@ interface AppProps {
   agent: Agent;
   profileName: string;
   modelName: string;
+  providerUrl: string;
   withDebug: boolean;
   debugPort: number;
 }
 
-const App: React.FC<AppProps> = ({ agent, profileName, modelName, withDebug, debugPort }) => {
+const App: React.FC<AppProps> = ({ agent, profileName, modelName, providerUrl, withDebug, debugPort }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [debugState, setDebugState] = useState<DebugState | null>(null);
@@ -197,6 +200,7 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, withDebug, deb
   const [thinking, setThinking] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [cumulativeUsage, setCumulativeUsage] = useState<CumulativeUsage>({ in: 0, out: 0, cost: 0 });
+  const [rightPanelView, setRightPanelView] = useState<'messages' | 'stats'>('messages');
   const wsRef = React.useRef<WebSocket | null>(null);
 
   // WebSocket 连接
@@ -242,6 +246,11 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, withDebug, deb
       if (!cmd) return;
       if (cmd === '/exit' || cmd === '/quit') {
         process.exit(0);
+      }
+      if (cmd === '/debug-info') {
+        setRightPanelView((prev) => prev === 'messages' ? 'stats' : 'messages');
+        setInput('');
+        return;
       }
       const userMsg: ChatMessage = { role: 'user', content: input };
       setMessages((prev) => [...prev, userMsg]);
@@ -314,10 +323,19 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, withDebug, deb
           <ChatPane messages={messages} thinking={thinking} withDebug={withDebug} />
         </Box>
 
-        {/* 右栏：消息日志（仅 debug 模式） */}
+        {/* 右栏（仅 debug 模式） */}
         {withDebug && (
           <Box flexGrow={0} width={54}>
-            <MessageLog debugState={debugState} connected={connected} />
+            {rightPanelView === 'messages' ? (
+              <MessageLog debugState={debugState} connected={connected} />
+            ) : (
+              <StatsPanel
+                debugState={debugState}
+                cumulative={cumulativeUsage}
+                modelName={modelName}
+                providerUrl={providerUrl}
+              />
+            )}
           </Box>
         )}
       </Box>

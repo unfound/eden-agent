@@ -82,16 +82,15 @@ export class Agent {
       }
 
       assistantMessage = choice.message.content ?? '';
-      debugChannel.emit('request_end', requestId, { response: assistantMessage, usage: ctx.tokenUsage });
+      ctx.messages.push({ role: 'user', content: userMessage });
+      if (assistantMessage) {
+        ctx.messages.push({ role: 'assistant', content: assistantMessage });
+      }
+      debugChannel.emit('request_end', requestId, { response: assistantMessage, usage: ctx.tokenUsage, messages: ctx.messages });
     } catch (err) {
       debugChannel.emit('error', requestId, { error: (err as Error).message });
       await hookPipeline.onPostProcess(ctx);
       throw err;
-    }
-
-    ctx.messages.push({ role: 'user', content: userMessage });
-    if (assistantMessage) {
-      ctx.messages.push({ role: 'assistant', content: assistantMessage });
     }
 
     await hookPipeline.onPostProcess(ctx);
@@ -164,12 +163,12 @@ export class Agent {
       }
 
       // Stream ended — finalize
-      debugChannel.emit('request_end', requestId, { response: fullText, usage: ctx.tokenUsage });
-
       ctx.messages.push({ role: 'user', content: userMessage });
       if (fullText) {
         ctx.messages.push({ role: 'assistant', content: fullText });
       }
+
+      debugChannel.emit('request_end', requestId, { response: fullText, usage: ctx.tokenUsage, messages: ctx.messages });
 
       try {
         await self.options.hookPipeline.onPostProcess(ctx);

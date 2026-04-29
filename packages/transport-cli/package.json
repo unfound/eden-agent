@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "eden": "./dist/bin/eden.js"
+    "eden": "./dist/src/eden.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,10 @@
     "@eden/core": "workspace:*",
     "@eden/plugin-debug-panel": "workspace:*",
     "@eden/plugin-memory-file": "workspace:*",
+    "@inkjs/ui": "^2.0.0",
+    "@types/react": "^18.3.28",
+    "ink": "^7.0.1",
+    "react": "^19.2.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {

@@ -1,14 +1,12 @@
 # @eden/transport-cli
 
-Eden Agent 的命令行传输层。提供 `eden` CLI 工具，支持交互式聊天和离线预览。
+Eden Agent 的命令行传输层。提供 `eden` CLI 工具。
 
 ## 安装
 
 ```bash
 pnpm add -w @eden/transport-cli
-# 或者全局链接
-pnpm add -w @eden/transport-cli
-node packages/transport-cli/bin/eden.js --help
+pnpm exec eden --help
 ```
 
 ## 命令
@@ -19,6 +17,7 @@ node packages/transport-cli/bin/eden.js --help
 
 ```bash
 eden chat --profile novelist
+eden chat --profile novelist --debug   # 启用 debug socket
 ```
 
 ### `eden dry-run`
@@ -26,16 +25,23 @@ eden chat --profile novelist
 离线预览本次请求的完整组成。不调 LLM，直接展示 system prompt + injected context + final messages。
 
 ```bash
-# 仅预览
 eden dry-run "写一段武侠开头" --profile novelist
-
-# 预览后调用 LLM
-eden dry-run "写一段武侠开头" --profile novelist --send
+eden dry-run "写一段武侠开头" --profile novelist --send  # 预览后调用 LLM
 ```
 
-### 可用 Profiles
+### `eden debug`
 
-- `default` — 通用助手，无插件
-- `novelist` — 武侠小说家，带文件记忆
-- `trader` — 量化交易助手
-- `researcher` — 技术研究员
+独立 Debug TUI。连接 `eden chat --debug` 启动的 socket，实时渲染面板。
+
+```bash
+eden debug --profile novelist
+```
+
+## 可用 Profiles
+
+| Profile | 说明 | 插件 |
+|---------|------|------|
+| `default` | 通用助手，无插件 | — |
+| `novelist` | 武侠小说家 | memory-file |
+| `trader` | 量化交易助手 | memory-file, tool-terminal, tool-web-search |
+| `researcher` | 技术研究员 | memory-vector, skill-fs, tool-terminal, tool-web-search, tool-browser, debug-panel |

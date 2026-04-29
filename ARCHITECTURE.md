@@ -437,7 +437,7 @@ eden-agent/
 │   ├── plugin-skill-fs/         # @eden/plugin-skill-fs (Phase 2)
 │   ├── plugin-tool-terminal/    # @eden/plugin-tool-terminal (Phase 2)
 │   ├── plugin-tool-web-search/  # @eden/plugin-tool-web-search (Phase 2)
-│   ├── plugin-debug-panel/      # @eden/plugin-debug-panel (Phase 3)
+│   ├── plugin-debug-panel/      # @eden/plugin-debug-panel ✅
 │   │
 │   ├── transport-cli/           # @eden/transport-cli ✅
 │   │   ├── bin/eden.ts
@@ -485,11 +485,12 @@ eden-agent/
 - [ ] `@eden/plugin-tool-web-search`
 - [ ] `@eden/transport-http`
 
-### Phase 3 — Debug 面板（1 周）
+### Phase 3 — Debug 面板（已完成 ✅）
 
-- [ ] `@eden/plugin-debug-panel` — 数据发布
-- [ ] Debug TUI (ink) — `eden debug` 命令
-- [ ] `eden dry-run` — 离线预览
+- [x] `@eden/plugin-debug-panel` — DebugChannel 订阅 + Unix Socket 广播 ✅
+- [x] Debug TUI — `eden debug` 命令，独立进程 ANSI 渲染 ✅
+- [x] `eden dry-run` — 离线预览（Phase 1 已实现） ✅
+- [x] `eden chat --debug` — chat 模式内联启用 debug-panel ✅
 
 ### Phase 4 — 高级（按需）
 

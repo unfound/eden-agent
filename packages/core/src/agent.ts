@@ -109,7 +109,13 @@ export class Agent {
       throw err;
     }
 
-    // 7. onPostProcess
+    // 7. 记录对话到 ctx.messages（供 onPostProcess 使用，如记忆写入）
+    ctx.messages.push({ role: 'user', content: userMessage });
+    if (assistantMessage) {
+      ctx.messages.push({ role: 'assistant', content: assistantMessage });
+    }
+
+    // 8. onPostProcess
     await hookPipeline.onPostProcess(ctx);
 
     return { response: assistantMessage, usage: ctx.tokenUsage, context: ctx };

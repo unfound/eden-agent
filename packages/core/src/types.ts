@@ -141,6 +141,10 @@ export interface ChatCompletionResponse {
 
 export interface ModelProvider {
   chat(messages: ChatCompletionMessage[]): Promise<ChatCompletionResponse>;
+  chatStream(messages: ChatCompletionMessage[]): Promise<{
+    textStream: AsyncGenerator<string, void, void>;
+    usage: Promise<{ in: number; out: number; total: number }>;
+  }>;
 }
 
 // ============ Debug ============

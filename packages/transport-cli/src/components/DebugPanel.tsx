@@ -6,62 +6,157 @@ export interface DebugState {
   systemPrompt: string;
   injectedContext: Array<{ source: string; content: string; tokens: number }>;
   tokenUsage: { in: number; out: number; total: number; cost?: number };
+  messages: Array<{ role: string; content: string }>;
+  toolCalls: Array<{
+    name: string;
+    args: string;
+    result?: string;
+    latencyMs?: number;
+  }>;
   lastError?: string;
+}
+
+export interface CumulativeUsage {
+  in: number;
+  out: number;
+  cost: number;
 }
 
 interface Props {
   state: DebugState | null;
   port: number;
+  connected: boolean;
+  cumulative: CumulativeUsage;
 }
 
-export const DebugPanel: React.FC<Props> = ({ state, port }) => {
+export const DebugPanel: React.FC<Props> = ({
+  state,
+  port,
+  connected,
+  cumulative,
+}) => {
   return (
     <Box
       flexDirection="column"
-      width={50}
+      width={48}
       borderStyle="round"
       borderDimColor={false}
-      padding={1}
+      paddingLeft={1}
+      paddingRight={1}
     >
-      <Text bold color="cyan">━━ Debug ━━</Text>
-      <Text dimColor>port: {port}</Text>
+      {/* ── Header line ── */}
+      <Box>
+        <Text bold color="cyan">
+          Debug
+        </Text>
+        <Text>
+          {' '}ws <Text color={connected ? 'green' : 'red'}>{connected ? '✓' : '✗'}</Text>
+        </Text>
+      </Box>
 
       {!state ? (
-        <Text dimColor>waiting...</Text>
+        <Text dimColor>waiting for request...</Text>
       ) : (
         <>
-          <Text dimColor>req: {state.currentRequestId ?? '—'}</Text>
-
-          <Text bold>▸ System ({state.systemPrompt.length}c)</Text>
-          <Text dimColor>{trunc(state.systemPrompt, 40)}</Text>
-
-          <Text bold>▸ Memory ({state.injectedContext.length})</Text>
-          {state.injectedContext.length === 0 ? (
-            <Text dimColor>  empty</Text>
-          ) : (
-            state.injectedContext.slice(0, 6).map((inj, i) => (
-              <Box key={i} flexDirection="column" paddingLeft={1}>
-                <Text dimColor color="cyan">[{inj.source}]</Text>
-                <Text dimColor>  {inj.tokens}t · {trunc(inj.content, 40)}</Text>
-              </Box>
-            ))
-          )}
-          {state.injectedContext.length > 6 && (
-            <Text dimColor>  ...+{state.injectedContext.length - 6}</Text>
-          )}
-
-          <Text bold>▸ Tokens</Text>
-          <Text>
-            {' '}in:<Text color="yellow">{state.tokenUsage.in}</Text>{' '}
-            out:<Text color="yellow">{state.tokenUsage.out}</Text>{' '}
-            tot:<Text color="yellow">{state.tokenUsage.total}</Text>
-            {state.tokenUsage.cost != null && (
-              <Text color="green"> ${state.tokenUsage.cost.toFixed(6)}</Text>
+          {/* Meta line: req + cumulative */}
+          <Text dimColor>
+            req {trunc(state.currentRequestId ?? '—', 16)}
+            {cumulative.in > 0 && (
+              <Text>
+                {' | '}tot in <Text color="yellow">{cumulative.in}</Text>
+                {' '}<Text color="green">${cumulative.cost.toFixed(6)}</Text>
+              </Text>
             )}
           </Text>
 
+          {/* Divider */}
+          <Text dimColor>────────────────────</Text>
+
+          {/* ▸ System Prompt — line stat */}
+          {state.systemPrompt && (
+            <Box key="section-system">
+              <Text bold>▸</Text>
+              <Text>
+                {' '}System{' '}
+                <Text dimColor>{state.systemPrompt.length}c</Text>
+              </Text>
+            </Box>
+          )}
+
+          {/* ▸ Memory — list items */}
+          {state.injectedContext.length > 0 && (
+            <Box key="section-memory" flexDirection="column">
+              <Box>
+                <Text bold>▸</Text>
+                <Text>
+                  {' '}Memory{' '}
+                  <Text dimColor>{state.injectedContext.length}</Text>
+                </Text>
+              </Box>
+              {state.injectedContext.slice(0, 4).map((inj, i) => (
+                <Box key={i} paddingLeft={2}>
+                  <Text dimColor>
+                    <Text dimColor color="cyan">[{inj.source}]</Text>
+                    {' '}{inj.tokens}t · {trunc(inj.content, 18)}
+                  </Text>
+                </Box>
+              ))}
+              {state.injectedContext.length > 4 && (
+                <Box paddingLeft={2}>
+                  <Text dimColor>… +{state.injectedContext.length - 4}</Text>
+                </Box>
+              )}
+            </Box>
+          )}
+
+          {/* ▸ Tools — line items */}
+          {state.toolCalls.length > 0 && (
+            <Box key="section-tools" flexDirection="column">
+              <Box>
+                <Text bold>▸</Text>
+                <Text>
+                  {' '}Tools{' '}
+                  <Text dimColor>{state.toolCalls.length}</Text>
+                </Text>
+              </Box>
+              {state.toolCalls.map((tc, i) => (
+                <Box key={i} paddingLeft={2}>
+                  <Text color="yellow">▶ {tc.name}</Text>
+                  <Text dimColor>
+                    {tc.latencyMs != null ? ` · ${tc.latencyMs}ms ` : ' '}
+                    {trunc(tc.args, 20)}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+
+          {/* ▸ Tokens — compact */}
+          <Box key="section-tokens">
+            <Text bold>▸</Text>
+            <Text>
+              {' '}in <Text color="yellow">{state.tokenUsage.in}</Text>
+              {' | '}out <Text color="yellow">{state.tokenUsage.out}</Text>
+              {' | '}tot <Text color="yellow">{state.tokenUsage.total}</Text>
+            </Text>
+          </Box>
+
+          {/* Cost — if available */}
+          {state.tokenUsage.cost != null && (
+            <Box key="section-cost">
+              <Text bold>▸</Text>
+              <Text>
+                {' '}Cost{' '}
+                <Text color="green">${state.tokenUsage.cost.toFixed(6)}</Text>
+              </Text>
+            </Box>
+          )}
+
+          {/* Error */}
           {state.lastError && (
-            <Text color="red">▸ Error: {trunc(state.lastError, 40)}</Text>
+            <Box key="section-error">
+              <Text color="red">✕ {trunc(state.lastError, 40)}</Text>
+            </Box>
           )}
         </>
       )}
@@ -71,5 +166,6 @@ export const DebugPanel: React.FC<Props> = ({ state, port }) => {
 
 function trunc(s: string, max: number): string {
   const single = s.replace(/\n/g, ' ');
-  return single.length <= max ? single : single.slice(0, max) + '...';
+  if (single.length <= max) return single;
+  return single.slice(0, max) + '…';
 }

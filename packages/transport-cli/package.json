@@ -2,9 +2,6 @@
   "name": "@eden/transport-cli",
   "version": "0.1.0",
   "type": "module",
-  "bin": {
-    "eden": "./dist/src/eden.js"
-  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {

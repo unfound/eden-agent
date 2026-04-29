@@ -16,7 +16,12 @@ import { ConfigLoader } from '@eden/core';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { WebSocket } from 'ws';
-import { DebugPanel, DebugState } from './components/DebugPanel.js';
+import { DebugState, CumulativeUsage } from './components/DebugPanel.js';
+import { Header } from './components/Header.js';
+import { ChatPane, ChatMessage } from './components/ChatPane.js';
+import { MessageLog } from './components/MessageLog.js';
+import { InputBar } from './components/InputBar.js';
+import { StatusBar } from './components/StatusBar.js';
 
 const args = process.argv.slice(2);
 const command = args[0] ?? 'chat';
@@ -37,7 +42,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('eden error:', err.message);
+  console.error('eden error:', (err as Error).message);
   process.exit(1);
 });
 
@@ -46,6 +51,7 @@ main().catch((err) => {
 async function runChat() {
   const profileName = getFlag('--profile') ?? 'default';
   const withDebug = hasFlag('--debug');
+
   const profilesDir = resolveProfileDir();
   const profilePath = join(profilesDir, profileName, 'config.yaml');
 
@@ -101,14 +107,13 @@ async function runChat() {
   const debugPlugin = pluginManager.getPlugins().get('@eden/plugin-debug-panel');
   const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18791;
 
-  // 启动 debug panel WebSocket server
   if (withDebug && debugPlugin) {
     (debugPlugin as any)?.start?.();
   }
 
   // 调用 Ink 渲染
   const app = render(
-    <ChatInk
+    <App
       agent={agent}
       profileName={profileName}
       modelName={profile.agent.model.model}
@@ -174,14 +179,9 @@ async function runDryRun() {
   }
 }
 
-// ==================== Ink 组件 ====================
+// ==================== App 组件 ====================
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface ChatInkProps {
+interface AppProps {
   agent: Agent;
   profileName: string;
   modelName: string;
@@ -189,19 +189,14 @@ interface ChatInkProps {
   debugPort: number;
 }
 
-const ChatInk: React.FC<ChatInkProps> = ({
-  agent,
-  profileName,
-  modelName,
-  withDebug,
-  debugPort,
-}) => {
-  const [messages, setMessages] = useState<Message[]>([]);
+const App: React.FC<AppProps> = ({ agent, profileName, modelName, withDebug, debugPort }) => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [debugState, setDebugState] = useState<DebugState | null>(null);
   const [connected, setConnected] = useState(false);
   const [thinking, setThinking] = useState(false);
-  const [chatHistory, setChatHistory] = useState<Message[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [cumulativeUsage, setCumulativeUsage] = useState<CumulativeUsage>({ in: 0, out: 0, cost: 0 });
   const wsRef = React.useRef<WebSocket | null>(null);
 
   // WebSocket 连接
@@ -214,8 +209,25 @@ const ChatInk: React.FC<ChatInkProps> = ({
     ws.on('open', () => setConnected(true));
     ws.on('message', (data) => {
       const msg = JSON.parse(data.toString());
-      if (msg.type === 'snapshot') setDebugState(msg.state);
-      else if (msg.type === 'event') ws.send(JSON.stringify({ type: 'snapshot' }));
+      if (msg.type === 'snapshot') {
+        setDebugState(msg.state);
+      } else if (msg.type === 'event') {
+        setDebugState((prev) => {
+          if (!prev) return prev;
+          return applyDebugEvent(prev, msg.event);
+        });
+        setCumulativeUsage((prev) => {
+          if (msg.event.type === 'request_end') {
+            const usage = msg.event.data.usage ?? {};
+            return {
+              in: prev.in + (usage.in ?? 0),
+              out: prev.out + (usage.out ?? 0),
+              cost: prev.cost + (usage.cost ?? 0),
+            };
+          }
+          return prev;
+        });
+      }
     });
     ws.on('close', () => setConnected(false));
     ws.on('error', () => setConnected(false));
@@ -231,23 +243,50 @@ const ChatInk: React.FC<ChatInkProps> = ({
       if (cmd === '/exit' || cmd === '/quit') {
         process.exit(0);
       }
-      const userMsg: Message = { role: 'user', content: input };
+      const userMsg: ChatMessage = { role: 'user', content: input };
       setMessages((prev) => [...prev, userMsg]);
       setChatHistory((prev) => [...prev, userMsg]);
+      const text = input;
       setInput('');
       setThinking(true);
 
-      // 调用 agent
-      agent.chat(chatHistory, input).then((result) => {
-        const assistantMsg: Message = { role: 'assistant', content: result.response };
-        setMessages((prev) => [...prev, assistantMsg]);
-        setChatHistory((prev) => [...prev, assistantMsg]);
+      // 流式输出
+      (async () => {
+        try {
+          const { stream, usage: usagePromise } = await agent.chatStream(chatHistory, text);
+          let firstToken = true;
+          for await (const content of stream) {
+            if (firstToken) {
+              setMessages((prev) => [...prev, { role: 'assistant', content }]);
+              setChatHistory((prev) => [...prev, { role: 'assistant', content }]);
+              firstToken = false;
+            } else {
+              setMessages((prev) => {
+                const copy = [...prev];
+                if (copy.length > 0) copy[copy.length - 1] = { role: 'assistant', content };
+                return copy;
+              });
+              setChatHistory((prev) => {
+                const copy = [...prev];
+                if (copy.length > 0) copy[copy.length - 1] = { role: 'assistant', content };
+                return copy;
+              });
+            }
+          }
+          // 流结束，更新累计用量
+          const usage = await usagePromise;
+          setCumulativeUsage((prev) => ({
+            in: prev.in + usage.in,
+            out: prev.out + usage.out,
+            cost: prev.cost + ((usage as any).cost ?? 0),
+          }));
+        } catch (err) {
+          const errMsg = `[error] ${(err as Error).message}`;
+          setMessages((prev) => [...prev, { role: 'assistant', content: errMsg }]);
+          setChatHistory((prev) => [...prev, { role: 'assistant', content: errMsg }]);
+        }
         setThinking(false);
-      }).catch((err) => {
-        const errMsg: Message = { role: 'assistant', content: `[error] ${err.message}` };
-        setMessages((prev) => [...prev, errMsg]);
-        setThinking(false);
-      });
+      })();
     } else if (key.backspace || key.delete) {
       setInput((prev) => prev.slice(0, -1));
     } else if (key.escape) {
@@ -257,46 +296,84 @@ const ChatInk: React.FC<ChatInkProps> = ({
     }
   });
 
-  const title = `[eden] ${profileName} | ${modelName}${withDebug ? ' | DEBUG' : ''}`;
-
   return (
     <Box flexDirection="column">
-      <Text bold color="cyan">{title}</Text>
-      <Text dimColor>输入 /exit 退出 | Backspace 删除</Text>
-      <Text> </Text>
+      <Header
+        profileName={profileName}
+        modelName={modelName}
+        withDebug={withDebug}
+        connected={connected}
+        debugPort={debugPort}
+      />
+      <Text dimColor>输入 /exit 退出</Text>
 
+      {/* 主体：双栏 */}
       <Box flexDirection="row" flexGrow={1}>
-        {/* 左侧：聊天区 */}
-        <Box flexDirection="column" flexGrow={1}>
-          {messages.map((m, i) => (
-            <Text key={i} wrap="truncate">
-              <Text color="green">{m.role === 'user' ? '🧑 你' : '🤖 Eden'}</Text>
-              <Text>: </Text>
-              <Text>{m.content}</Text>
-            </Text>
-          ))}
-          {thinking && (
-            <Text italic>Eden: thinking...</Text>
-          )}
-
-          {/* 输入行 */}
-          <Box marginTop={1}>
-            <Text color="green">{'🧑 你> '}</Text>
-            <Text>{input}_</Text>
-          </Box>
+        {/* 左栏：聊天记录 */}
+        <Box flexGrow={1} flexShrink={1}>
+          <ChatPane messages={messages} thinking={thinking} withDebug={withDebug} />
         </Box>
 
-        {/* 右侧：Debug Panel */}
+        {/* 右栏：消息日志（仅 debug 模式） */}
         {withDebug && (
-          <Box marginLeft={1} flexDirection="column">
-            <DebugPanel state={debugState} port={debugPort} />
-            <Text dimColor>ws {connected ? '✓' : '✗'}</Text>
+          <Box flexGrow={0} width={54}>
+            <MessageLog debugState={debugState} connected={connected} />
           </Box>
         )}
       </Box>
+
+      {/* 输入栏 */}
+      <InputBar input={input} />
+
+      {/* 状态栏 */}
+      <StatusBar modelName={modelName} cumulative={cumulativeUsage} maxTokens={undefined} />
     </Box>
   );
 };
+
+// ==================== Debug 事件累积 ====================
+
+function applyDebugEvent(
+  state: DebugState,
+  event: { type: string; requestId: string; data: Record<string, unknown> }
+): DebugState {
+  const data = event.data;
+  switch (event.type) {
+    case 'request_start':
+      return {
+        ...state,
+        currentRequestId: event.requestId,
+        systemPrompt: (data.systemPrompt as string) ?? '',
+        injectedContext: (data.injectedContext as Array<{ source: string; content: string; tokens: number }>) ?? [],
+        lastError: undefined,
+        toolCalls: [],
+      };
+    case 'request_end':
+      return {
+        ...state,
+        tokenUsage: (data.usage as { in: number; out: number; total: number; cost?: number }) ?? state.tokenUsage,
+        messages: (data.messages as Array<{ role: string; content: string }>) ?? state.messages,
+      };
+    case 'tool_called': {
+      const tc = { name: (data.name as string) ?? '', args: JSON.stringify(data.args ?? {}) };
+      return { ...state, toolCalls: [...state.toolCalls, tc] };
+    }
+    case 'tool_result': {
+      const calls = [...state.toolCalls];
+      const last = calls[calls.length - 1];
+      if (last) { last.result = String(data.result ?? ''); last.latencyMs = data.latencyMs as number | undefined; }
+      return { ...state, toolCalls: calls };
+    }
+    case 'context_injected': {
+      const injections = (data.injections as Array<{ source: string; content: string; tokens: number }>) ?? [];
+      return { ...state, injectedContext: [...state.injectedContext, ...injections] };
+    }
+    case 'error':
+      return { ...state, lastError: (data.error as string) ?? 'unknown error' };
+    default:
+      return state;
+  }
+}
 
 // ==================== 工具函数 ====================
 
@@ -313,11 +390,6 @@ function hasFlag(flag: string): boolean {
   return args.includes(flag);
 }
 
-function trunc(s: string, max: number): string {
-  const single = s.replace(/\n/g, ' ');
-  return single.length <= max ? single : single.slice(0, max) + '...';
-}
-
 function printDryRunOutput(ctx: any, userPrompt: string) {
   console.log('\n=== DRY RUN ================================================\n');
   console.log(`-- System Prompt (${ctx.systemPrompt.length}c) --`);
@@ -331,7 +403,7 @@ function printDryRunOutput(ctx: any, userPrompt: string) {
   console.log('\n-- Skills --');
   if (ctx.activeSkills.length === 0) console.log('(无)');
   else console.log(ctx.activeSkills.join('\n'));
-  console.log('\n============================================================');
+  console.log('============================================================');
 }
 
 function printHelp() {
@@ -339,14 +411,10 @@ function printHelp() {
 eden — Profile-based AI Agent
 
 Usage:
-  eden chat [--profile <name>]         交互式聊天
-  eden chat --profile <name> --debug   聊天 + Debug 分屏
-  eden dry-run "<prompt>" [--profile]  离线预览
-  eden dry-run "<prompt>" --send       预览后调用 LLM
-  eden help
-
-Profiles:
-  ~/.eden/profiles/<name>/config.yaml
-  EDEN_PROFILES_DIR 环境变量可覆盖
+  pnpm chat [--profile <name>]          交互式聊天
+  pnpm chat --profile <name> --debug    聊天 + Debug 分屏
+  pnpm dry-run "<prompt>" [--profile]  离线预览
+  pnpm dry-run "<prompt>" --send       预览后调用 LLM
+  pnpm help
 `);
 }

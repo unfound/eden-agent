@@ -22,6 +22,7 @@ export class OpenAIProvider implements ModelProvider {
       body: JSON.stringify({
         model,
         messages,
+        stream: false,
         ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
         ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
       }),
@@ -33,6 +34,93 @@ export class OpenAIProvider implements ModelProvider {
     }
 
     return response.json() as Promise<ChatCompletionResponse>;
+  }
+
+  /**
+   * 流式调用 LLM，逐 token 产出文本
+   * 返回 [textStream, usagePromise]
+   * - textStream: AsyncGenerator<string, void, void> — 每个 yield 产出最新累积文本
+   * - usagePromise: Promise<{ in: number; out: number; total: number }> — 流结束后获取用量
+   */
+  async chatStream(
+    messages: ChatCompletionMessage[]
+  ): Promise<{
+    textStream: AsyncGenerator<string, void, void>;
+    usage: Promise<{ in: number; out: number; total: number }>;
+  }> {
+    const { baseURL, model, apiKey } = this.config;
+
+    const response = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
+        ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`ModelProvider: HTTP ${response.status} — ${text}`);
+    }
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    let usageResolver: (v: { in: number; out: number; total: number }) => void;
+    const usagePromise = new Promise<{ in: number; out: number; total: number }>((r) => { usageResolver = r; });
+
+    let accumulatedText = '';
+    let done = false;
+    let finalUsage = { in: 0, out: 0, total: 0 };
+
+    async function* generate(): AsyncGenerator<string, void, void> {
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        if (streamDone) { done = true; break; }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') { done = true; break; }
+
+          try {
+            const parsed = JSON.parse(data);
+            // usage chunk (some providers send usage in a final chunk)
+            if (parsed.usage) {
+              finalUsage = {
+                in: parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? 0,
+                out: parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? 0,
+                total: parsed.usage.total_tokens ?? parsed.usage.total_tokens ?? 0,
+              };
+            }
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) {
+              accumulatedText += delta;
+              yield accumulatedText;
+            }
+          } catch {
+            // skip unparseable lines
+          }
+        }
+      }
+      usageResolver(finalUsage);
+    }
+
+    return { textStream: generate(), usage: usagePromise };
   }
 }
 
@@ -53,6 +141,7 @@ export function estimateTokens(text: string): number {
  */
 const MODEL_COSTS: Record<string, { in: number; out: number }> = {
   'qwen3.5-9b': { in: 0.1, out: 0.1 },
+  'qwen3.5': { in: 0.1, out: 0.1 },
   'qwen2.5-7b': { in: 0.1, out: 0.1 },
   'gpt-4o-mini': { in: 0.15, out: 0.6 },
   'gpt-4o': { in: 2.5, out: 10 },

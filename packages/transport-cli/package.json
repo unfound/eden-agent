@@ -1,0 +1,24 @@
+{
+  "name": "@eden/transport-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "eden": "./bin/eden.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsx build.ts",
+    "dev": "tsx watch.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@eden/core": "workspace:*",
+    "@eden/plugin-memory-file": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

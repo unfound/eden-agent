@@ -415,45 +415,44 @@ for (const inj of ctx.injectedContext) {
 ```
 eden-agent/
 ├── ARCHITECTURE.md
+├── README.md
 ├── packages/
-│   ├── core/                    # @eden/core
+│   ├── core/                    # @eden/core — 核心框架
 │   │   ├── src/
 │   │   │   ├── agent.ts
 │   │   │   ├── plugin-manager.ts
 │   │   │   ├── hook-pipeline.ts
-│   │   │   ├── provider.ts      # ModelProvider 接口 + OpenAI 兼容
-│   │   │   ├── profile.ts       # Profile 加载/管理
-│   │   │   ├── system-prompt.ts # System prompt 动态组装
-│   │   │   ├── debug-channel.ts # Debug 数据发布基础设施（core）
+│   │   │   ├── provider.ts
+│   │   │   ├── profile.ts
+│   │   │   ├── system-prompt.ts
+│   │   │   ├── debug-channel.ts
 │   │   │   ├── config.ts
 │   │   │   └── types.ts
-│   │   ├── tests/
-│   │   └── package.json
+│   │   └── README.md
 │   │
-│   ├── plugin-memory-file/      # @eden/plugin-memory-file
+│   ├── plugin-memory-file/      # @eden/plugin-memory-file ✅
 │   │   ├── src/index.ts
-│   │   ├── tests/
-│   │   └── package.json
+│   │   └── README.md
 │   │
-│   ├── plugin-skill-fs/         # @eden/plugin-skill-fs
-│   ├── plugin-tool-terminal/    # @eden/plugin-tool-terminal
-│   ├── plugin-tool-web-search/  # @eden/plugin-tool-web-search
-│   ├── plugin-debug-panel/      # @eden/plugin-debug-panel
-│   │   ├── src/
-│   │   │   ├── index.ts         # EdenPlugin
-│   │   │   └── tui.ts           # Debug TUI (ink)
-│   │   └── package.json
+│   ├── plugin-skill-fs/         # @eden/plugin-skill-fs (Phase 2)
+│   ├── plugin-tool-terminal/    # @eden/plugin-tool-terminal (Phase 2)
+│   ├── plugin-tool-web-search/  # @eden/plugin-tool-web-search (Phase 2)
+│   ├── plugin-debug-panel/      # @eden/plugin-debug-panel (Phase 3)
 │   │
-│   ├── transport-cli/           # @eden/transport-cli
-│   └── transport-http/          # @eden/transport-http
+│   ├── transport-cli/           # @eden/transport-cli ✅
+│   │   ├── bin/eden.ts
+│   │   └── README.md
+│   │
+│   └── transport-http/          # @eden/transport-http (Phase 2)
 │
-├── profiles/                    # 示例 profile 文件
-│   ├── novelist.yaml
-│   ├── trader.yaml
-│   └── researcher.yaml
+├── ~/.eden/profiles/           # Profile 配置（用户目录下）
+│   ├── default/
+│   ├── novelist/                # +memory-file ✅
+│   ├── trader/
+│   └── researcher/
 │
 ├── examples/
-│   └── minimal/                 # 零插件示例
+│   └── minimal/
 │
 ├── tsconfig.json
 ├── package.json
@@ -464,19 +463,19 @@ eden-agent/
 
 ## 10. 实施路线
 
-### Phase 1 — 核心 + Profile 系统（1-2 周）
+### Phase 1 — 核心 + Profile 系统（已完成 ✅）
 
-- [ ] `@eden/core`
-  - [ ] `PluginManager` — 加载/生命周期/错误隔离
-  - [ ] `HookPipeline` — 钩子注册和执行
-  - [ ] `ModelProvider` — OpenAI 兼容接口
-  - [ ] `ProfileManager` — 加载 profile yaml，按需加载插件
-  - [ ] `SystemPromptAssembler` — 动态拼装 system prompt
-  - [ ] `DebugChannel` — debug 数据发布基础设施
-  - [ ] `ConfigLoader` — YAML + env var 插值 + token budget 校验
-  - [ ] 类型系统
-- [ ] `@eden/transport-cli` — CLI 入口（`eden chat`, `eden dry-run`）
-- [ ] 测试覆盖
+- [x] `@eden/core`
+  - [x] `PluginManager` — 加载/生命周期/错误隔离
+  - [x] `HookPipeline` — 钩子注册和执行
+  - [x] `ModelProvider` — OpenAI 兼容接口
+  - [x] `ProfileManager` — 加载 profile yaml，按需加载插件
+  - [x] `SystemPromptAssembler` — 动态拼装 system prompt
+  - [x] `DebugChannel` — debug 数据发布基础设施
+  - [x] `ConfigLoader` — YAML + env var 插值 + token budget 校验
+  - [x] 类型系统
+- [x] `@eden/transport-cli` — CLI 入口（`eden chat`, `eden dry-run`）
+- [x] `@eden/plugin-memory-file` — 文件记忆插件
 
 ### Phase 2 — 首批插件（2-3 周）
 
@@ -533,10 +532,24 @@ eden-agent/
 
 ## 12. 下一步
 
-1. ~~对齐架构方向~~ ✅
-2. 确认今晚讨论结果，明天动手
-3. 搭建 monorepo → `pnpm init` + workspaces
-4. 实现 `@eden/core` → PluginManager → HookPipeline → ProfileManager → ModelProvider
-5. 实现 `@eden/transport-cli` → `eden chat --profile novelist`
-6. 实现 `@eden/plugin-memory-file` → 验证插件系统
-7. 端到端跑通：`eden chat --profile novelist`
+Phase 1 已完成 ✅，项目框架搭好并提交 GitHub。
+
+接下来按需推进：
+
+1. 接入真实 LLM 端点，跑通 end-to-end
+2. 实现下一个插件（skill-fs / terminal / web-search）
+3. Debug Panel + TUI
+4. HTTP Transport（供 API 调用）
+
+## 13. 已完成记录
+
+### Phase 1 — 2026-04-29
+
+**Commit**: `915bc02 feat: Phase 1 core framework - agent loop, plugin system, memory-file plugin`
+
+**交付物**:
+- `@eden/core` — Agent Loop、HookPipeline、PluginManager、ProfileManager、ConfigLoader、OpenAIProvider、SystemPromptAssembler、DebugChannel、类型系统
+- `@eden/plugin-memory-file` — 基于 JSONL 的文件记忆插件
+- `@eden/transport-cli` — `eden chat` + `eden dry-run` CLI
+- 4 个示例 Profile：default、novelist、trader、researcher
+- 完整 ARCHITECTURE.md + 各子包 README

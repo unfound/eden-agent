@@ -201,7 +201,10 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, providerUrl, w
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [cumulativeUsage, setCumulativeUsage] = useState<CumulativeUsage>({ in: 0, out: 0, cost: 0 });
   const [rightPanelView, setRightPanelView] = useState<'messages' | 'stats'>('messages');
+  const [chatScrollOffset, setChatScrollOffset] = useState(-1); // -1 = auto-follow bottom
   const wsRef = React.useRef<WebSocket | null>(null);
+  const prevMsgLen = React.useRef(0);
+  const prevThinking = React.useRef(false);
 
   // WebSocket 连接
   useEffect(() => {
@@ -300,6 +303,30 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, providerUrl, w
       setInput((prev) => prev.slice(0, -1));
     } else if (key.escape) {
       process.exit(0);
+    } else if (key.upArrow) {
+      setChatScrollOffset((prev) => {
+        // If at bottom (-1), move up by 1; otherwise scroll up by 1
+        const current = prev === -1 ? Math.max(0, messages.length - 1) : prev;
+        return Math.max(0, current - 1);
+      });
+    } else if (key.downArrow) {
+      setChatScrollOffset((prev) => {
+        if (prev === -1) return -1; // already at bottom
+        const next = prev + 1;
+        // If next would show bottom, reset to auto-follow
+        return next >= messages.length ? -1 : next;
+      });
+    } else if (key.pageUp) {
+      setChatScrollOffset((prev) => {
+        const current = prev === -1 ? Math.max(0, messages.length - 10) : prev;
+        return Math.max(0, current - 10);
+      });
+    } else if (key.pageDown) {
+      setChatScrollOffset((prev) => {
+        if (prev === -1) return -1;
+        const next = Math.min(messages.length - 1, prev + 10);
+        return next >= messages.length - 1 ? -1 : next;
+      });
     } else if (inputChars && !key.ctrl && !key.meta) {
       setInput((prev) => prev + inputChars);
     }
@@ -320,7 +347,13 @@ const App: React.FC<AppProps> = ({ agent, profileName, modelName, providerUrl, w
       <Box flexDirection="row" flexGrow={1}>
         {/* 左栏：聊天记录 */}
         <Box flexGrow={1} flexShrink={1}>
-          <ChatPane messages={messages} thinking={thinking} withDebug={withDebug} />
+          <ChatPane
+            messages={messages}
+            thinking={thinking}
+            withDebug={withDebug}
+            scrollOffset={chatScrollOffset}
+            onScroll={setChatScrollOffset}
+          />
         </Box>
 
         {/* 右栏（仅 debug 模式） */}
@@ -363,6 +396,8 @@ function applyDebugEvent(
         currentRequestId: event.requestId,
         systemPrompt: (data.systemPrompt as string) ?? '',
         injectedContext: (data.injectedContext as Array<{ source: string; content: string; tokens: number }>) ?? [],
+        rawRequest: (data.rawRequest as Array<{ role: string; content: string }>) ?? [],
+        rawResponse: null,
         lastError: undefined,
         toolCalls: [],
       };
@@ -371,6 +406,7 @@ function applyDebugEvent(
         ...state,
         tokenUsage: (data.usage as { in: number; out: number; total: number; cost?: number }) ?? state.tokenUsage,
         messages: (data.messages as Array<{ role: string; content: string }>) ?? state.messages,
+        rawResponse: (data.rawResponse as { content: string; finishReason?: string; model?: string; id?: string }) ?? null,
       };
     case 'tool_called': {
       const tc = { name: (data.name as string) ?? '', args: JSON.stringify(data.args ?? {}) };

@@ -7,6 +7,8 @@ export interface DebugState {
   injectedContext: Array<{ source: string; content: string; tokens: number }>;
   tokenUsage: { in: number; out: number; total: number; cost?: number };
   messages: Array<{ role: string; content: string }>;
+  rawRequest: Array<{ role: string; content: string }>;
+  rawResponse: { content: string; finishReason?: string; model?: string; id?: string } | null;
   toolCalls: Array<{
     name: string;
     args: string;

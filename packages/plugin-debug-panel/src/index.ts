@@ -18,6 +18,8 @@ interface DebugState {
   tokenUsage: { in: number; out: number; total: number; cost?: number };
   toolCalls: Array<{ name: string; args: string; result?: string; latencyMs?: number }>;
   messages: Array<{ role: string; content: string }>;
+  rawRequest: Array<{ role: string; content: string }>;
+  rawResponse: { content: string; finishReason?: string; model?: string; id?: string } | null;
   lastError?: string;
 }
 
@@ -86,11 +88,14 @@ export class DebugPanelPlugin implements EdenPlugin {
         this.state.injectedContext = (data.injectedContext as Array<{ source: string; content: string; tokens: number }>) ?? [];
         this.state.lastError = undefined;
         this.state.toolCalls = [];
+        this.state.rawRequest = (data.rawRequest as Array<{ role: string; content: string }>) ?? [];
+        this.state.rawResponse = null;
         break;
 
       case 'request_end':
         this.state.tokenUsage = (data.usage as { in: number; out: number; total: number; cost?: number }) ?? { in: 0, out: 0, total: 0 };
         this.state.messages = (data.messages as Array<{ role: string; content: string }>) ?? [];
+        this.state.rawResponse = (data.rawResponse as { content: string; finishReason?: string; model?: string; id?: string }) ?? null;
         break;
 
       case 'tool_called':
@@ -140,6 +145,8 @@ export class DebugPanelPlugin implements EdenPlugin {
       tokenUsage: { in: 0, out: 0, total: 0 },
       toolCalls: [],
       messages: [],
+      rawRequest: [],
+      rawResponse: null,
     };
   }
 }

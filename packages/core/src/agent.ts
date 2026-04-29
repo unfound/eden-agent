@@ -61,13 +61,17 @@ export class Agent {
     systemPromptAssembler.applyTokenBudget(ctx, pluginBudgets);
 
     const systemPrompt = systemPromptAssembler.assemble(ctx);
-    debugChannel.emit('request_start', requestId, { systemPrompt, injectedContext: ctx.injectedContext });
+    const llmMessages = this.buildMessages(systemPrompt, messages, userMessage);
+
+    debugChannel.emit('request_start', requestId, {
+      systemPrompt,
+      injectedContext: ctx.injectedContext,
+      rawRequest: llmMessages,
+    });
 
     if (opts?.dryRun) {
       return { response: '', usage: ctx.tokenUsage, context: ctx };
     }
-
-    const llmMessages = this.buildMessages(systemPrompt, messages, userMessage);
 
     let assistantMessage = '';
     try {
@@ -86,7 +90,17 @@ export class Agent {
       if (assistantMessage) {
         ctx.messages.push({ role: 'assistant', content: assistantMessage });
       }
-      debugChannel.emit('request_end', requestId, { response: assistantMessage, usage: ctx.tokenUsage, messages: ctx.messages });
+      debugChannel.emit('request_end', requestId, {
+        response: assistantMessage,
+        usage: ctx.tokenUsage,
+        messages: ctx.messages,
+        rawResponse: {
+          content: assistantMessage,
+          finishReason: response.choices[0].finish_reason,
+          model: response.model,
+          id: response.id,
+        },
+      });
     } catch (err) {
       debugChannel.emit('error', requestId, { error: (err as Error).message });
       await hookPipeline.onPostProcess(ctx);
@@ -124,9 +138,13 @@ export class Agent {
     systemPromptAssembler.applyTokenBudget(ctx, pluginBudgets);
 
     const systemPrompt = systemPromptAssembler.assemble(ctx);
-    debugChannel.emit('request_start', requestId, { systemPrompt, injectedContext: ctx.injectedContext });
-
     const llmMessages = this.buildMessages(systemPrompt, messages, userMessage);
+
+    debugChannel.emit('request_start', requestId, {
+      systemPrompt,
+      injectedContext: ctx.injectedContext,
+      rawRequest: llmMessages,
+    });
 
     const { textStream, usage: streamUsage } = await provider.chatStream(llmMessages);
     let fullText = '';
@@ -168,7 +186,15 @@ export class Agent {
         ctx.messages.push({ role: 'assistant', content: fullText });
       }
 
-      debugChannel.emit('request_end', requestId, { response: fullText, usage: ctx.tokenUsage, messages: ctx.messages });
+      debugChannel.emit('request_end', requestId, {
+        response: fullText,
+        usage: ctx.tokenUsage,
+        messages: ctx.messages,
+        rawResponse: {
+          content: fullText,
+          finishReason: 'stop',
+        },
+      });
 
       try {
         await self.options.hookPipeline.onPostProcess(ctx);

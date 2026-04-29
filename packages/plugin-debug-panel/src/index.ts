@@ -2,14 +2,14 @@
  * @eden/plugin-debug-panel
  *
  * Debug 数据发布插件。
- * 订阅核心 DebugChannel，事件通过 Unix Socket 广播给 TUI。
+ * 订阅核心 DebugChannel，事件通过 WebSocket TCP 广播给 TUI。
  * 不加载此插件 → DebugChannel.emit() 无订阅者直接返回 → 零开销。
  */
 
 import type { EdenPlugin, PluginContext, DebugEvent } from '@eden/core';
 import { WebSocketServer, WebSocket } from 'ws';
 
-const SOCKET_PATH = '/tmp/eden-debug.sock';
+const DEBUG_PORT = 18791;
 
 interface DebugState {
   currentRequestId: string | null;
@@ -38,7 +38,7 @@ export class DebugPanelPlugin implements EdenPlugin {
 
   private async startSocketServer(): Promise<void> {
     return new Promise<void>((resolve) => {
-      this.wss = new WebSocketServer({ path: SOCKET_PATH });
+      this.wss = new WebSocketServer({ port: DEBUG_PORT });
       this.wss.on('listening', () => resolve());
       this.wss.on('error', (err) => console.error('[debug-panel] socket error:', err.message));
       this.wss.on('connection', (ws) => {
@@ -51,8 +51,8 @@ export class DebugPanelPlugin implements EdenPlugin {
     });
   }
 
-  getSocketPath(): string {
-    return SOCKET_PATH;
+  getDebugPort(): number {
+    return DEBUG_PORT;
   }
 
   async enable(): Promise<void> {
@@ -60,7 +60,7 @@ export class DebugPanelPlugin implements EdenPlugin {
     this.unsubscribe = dc.subscribe((event: DebugEvent) => {
       this.handleDebugEvent(event);
     });
-    console.log('[debug-panel] enabled — socket:', SOCKET_PATH);
+    console.log('[debug-panel] enabled — port:', DEBUG_PORT);
   }
 
   async disable(): Promise<void> {

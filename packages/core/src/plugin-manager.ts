@@ -20,9 +20,9 @@ export class PluginManager {
   constructor(debugChannel: DebugChannel, builtins?: Map<string, () => EdenPlugin>) {
     this.debugChannel = debugChannel;
     if (builtins) {
-      for (const [name, factory] of builtins) {
+      builtins.forEach((factory, name) => {
         this.builtinPlugins.set(name, factory);
-      }
+      });
     }
   }
 

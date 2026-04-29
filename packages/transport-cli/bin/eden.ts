@@ -3,20 +3,30 @@
  * eden — CLI 入口
  *
  * eden chat --profile novelist
- * eden chat --profile novelist --debug   # chat + TUI 分屏
+ * eden chat --profile novelist --debug   # 左右分屏：chat | debug panel
  * eden dry-run "prompt" --profile novelist
  * eden dry-run "prompt" --profile novelist --send
- * eden debug --profile novelist          # 单独 TUI，连接 chat 进程的 socket
  */
 
-import { Agent, HookPipeline, PluginManager, ProfileManager, DebugChannel, SystemPromptAssembler, OpenAIProvider, estimateTokens as coreEstimateTokens } from '@eden/core';
+import { Agent, HookPipeline, PluginManager, DebugChannel, SystemPromptAssembler, OpenAIProvider, estimateTokens as coreEstimateTokens } from '@eden/core';
 import createMemoryFilePlugin from '@eden/plugin-memory-file';
 import { createPlugin as createDebugPanelPlugin } from '@eden/plugin-debug-panel';
 import { ConfigLoader } from '@eden/core';
 import { existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { spawn } from 'child_process';
 import { WebSocket } from 'ws';
+
+// ---- ANSI 颜色常量 ----
+const C = {
+  reset: '\x1b[0m', dim: '\x1b[2m', cyan: '\x1b[36m',
+  yellow: '\x1b[33m', green: '\x1b[32m', red: '\x1b[31m', bold: '\x1b[1m',
+  brightBlue: '\x1b[94m',
+};
+
+// 左右分屏宽度配置
+const LEFT_WIDTH = 80;   // chat 区
+const TOTAL_HEIGHT = 40; // 总高（行数）
+const DEBUG_COL = LEFT_WIDTH + 1; // debug 区起始列
 
 // ---- 入口 ----
 
@@ -28,8 +38,6 @@ async function main() {
     await runChat();
   } else if (command === 'dry-run') {
     await runDryRun();
-  } else if (command === 'debug') {
-    await runDebugTui();
   } else if (command === 'help') {
     printHelp();
   } else {
@@ -43,77 +51,7 @@ main().catch((err) => {
   process.exit(1);
 });
 
-// ---- debug 模式：独立 TUI 进程，连接 socket ----
-
-async function runDebugTui() {
-  const profileName = getFlag('--profile') ?? 'default';
-  const socketPath = `/tmp/eden-debug-${process.getuid?.() ?? 0}.sock`;
-
-  console.log(`[eden] Debug TUI — profile: ${profileName}`);
-  console.log(`[eden] Connecting to socket: ${socketPath}\n`);
-
-  // 启动 PTY TUI
-  const tty = spawn('node', ['-e', `
-    const { WebSocket } = require('ws');
-    const C2 = { reset: '\\x1b[0m', dim: '\\x1b[2m', cyan: '\\x1b[36m', yellow: '\\x1b[33m', green: '\\x1b[32m', red: '\\x1b[31m', bold: '\\x1b[1m' };
-    const d = (s, n) => s.length > n ? s.slice(0, n) + '...' : s;
-    let state = null;
-
-    function render() {
-      if (!state) return;
-      process.stdout.write('\\x1b[2J\\x1b[H');
-      let out = C2.bold + C2.cyan + '═══ Eden Debug ═══' + C2.reset + '\\n';
-      out += C2.dim + 'req: ' + (state.currentRequestId ?? '—') + C2.reset + '\\n\\n';
-      out += C2.bold + '▸ System Prompt' + C2.reset + ' (' + state.systemPrompt.length + ' chars)\\n';
-      out += d(state.systemPrompt, 300) + '\\n\\n';
-      out += C2.bold + '▸ Memory (' + state.injectedContext.length + ')' + C2.reset + '\\n';
-      if (!state.injectedContext.length) out += C2.dim + '  (empty)' + C2.reset + '\\n';
-      else for (const inj of state.injectedContext) {
-        out += '  ' + C2.cyan + '[' + inj.source + ']' + C2.reset + ' ' + inj.tokens + ' tokens\\n';
-        out += '  ' + d(inj.content, 80) + '\\n';
-      }
-      out += '\\n' + C2.bold + '▸ Tokens' + C2.reset + '\\n';
-      const u = state.tokenUsage;
-      out += '  in:' + C2.yellow + u.in + C2.reset + '  out:' + C2.yellow + u.out + C2.reset + '  total:' + C2.yellow + u.total + C2.reset;
-      if (u.cost != null) out += '  ' + C2.green + '$' + u.cost.toFixed(6) + C2.reset;
-      out += '\\n';
-      if (state.lastError) out += '\\n' + C2.red + '▸ Error: ' + state.lastError + C2.reset + '\\n';
-      process.stdout.write(out + '\\n');
-    }
-
-    try {
-      const ws = new WebSocket('ws+unix://${socketPath}');
-      ws.on('open', () => console.error('[tui] connected'));
-      ws.on('message', (data) => {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === 'snapshot') { state = msg.state; render(); }
-        else if (msg.type === 'event') {
-          // 增量更新 state
-          const ev = msg.event;
-          if (ev.type === 'request_start') {
-            if (state) { state.currentRequestId = ev.requestId; state.systemPrompt = ev.data?.systemPrompt ?? ''; state.injectedContext = ev.data?.injectedContext ?? []; }
-            render();
-          } else if (ev.type === 'request_end') {
-            if (state) state.tokenUsage = ev.data?.usage ?? { in:0,out:0,total:0 };
-            render();
-          } else if (ev.type === 'error') {
-            if (state) state.lastError = ev.data?.error;
-            render();
-          }
-        }
-      });
-      ws.on('close', () => { console.error('[tui] disconnected, retry 1s...'); setTimeout(() => process.exit(1), 1000); });
-      ws.on('error', () => {});
-    } catch(e) { console.error('[tui] connect error:', e.message); process.exit(1); }
-  `], {
-    stdio: ['ignore', 'inherit', 'inherit'],
-    env: { ...process.env, FORCE_COLOR: '1' },
-  });
-
-  tty.on('exit', (code) => process.exit(code ?? 0));
-}
-
-// ---- chat 模式 ----
+// ==================== CHAT 模式 ====================
 
 async function runChat() {
   const profileName = getFlag('--profile') ?? 'default';
@@ -121,7 +59,6 @@ async function runChat() {
 
   const profilesDir = resolveProfileDir();
   const profilePath = join(profilesDir, profileName, 'config.yaml');
-
   if (!existsSync(profilePath)) {
     console.error(`eden: profile "${profileName}" not found at ${profilePath}`);
     process.exit(1);
@@ -133,20 +70,14 @@ async function runChat() {
   const debugChannel = new DebugChannel();
   const hookPipeline = new HookPipeline();
   const builtinPlugins = new Map<string, () => any>();
-
-  // 注册内置插件
-  const regMem = () => createMemoryFilePlugin();
-  builtinPlugins.set('memory-file', regMem);
-  builtinPlugins.set('@eden/plugin-memory-file', regMem);
-
-  // 注册 debug-panel（短名和全名）
+  builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
+  builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
   const regDebug = () => createDebugPanelPlugin();
-  builtinPlugins.set('debug-panel', regDebug);
   builtinPlugins.set('@eden/plugin-debug-panel', regDebug);
+  builtinPlugins.set('debug-panel', regDebug);
 
   const pluginManager = new PluginManager(debugChannel, builtinPlugins);
 
-  // 按需加载插件
   for (const entry of profile.plugins) {
     try {
       await pluginManager.load(entry.name, entry.config ?? {}, profileDir);
@@ -156,82 +87,114 @@ async function runChat() {
     }
   }
 
-  // 强制启用 debug-panel（--debug 标志）
   if (withDebug) {
-    // 确保 debug-panel 已加载（同名插件配置存在）
-    if (!pluginManager.getPlugins().has('@eden/plugin-debug-panel') &&
+    const debugKey = '@eden/plugin-debug-panel';
+    if (!pluginManager.getPlugins().has(debugKey) &&
         !pluginManager.getPlugins().has('debug-panel')) {
-      await pluginManager.load('@eden/plugin-debug-panel', {}, profileDir);
+      await pluginManager.load(debugKey, {}, profileDir);
     }
-    await pluginManager.enable('@eden/plugin-debug-panel');
-    await pluginManager.enable('debug-panel');
+    await pluginManager.enable(debugKey);
   }
 
-  // 注册钩子
   pluginManager.getPlugins().forEach((plugin) => {
     hookPipeline.register(plugin);
   });
 
   const provider = new OpenAIProvider(profile.agent.model);
   const assembler = new SystemPromptAssembler();
-
   const agent = new Agent({
-    pluginManager,
-    provider,
-    hookPipeline,
-    debugChannel,
+    pluginManager, provider, hookPipeline, debugChannel,
     systemPromptAssembler: assembler,
     persona: profile.agent.system.persona,
     model: profile.agent.model.model,
   });
 
-  const debugPlugin = pluginManager.getPlugins().get('debug-panel')
-    ?? pluginManager.getPlugins().get('@eden/plugin-debug-panel');
+  const debugPlugin = pluginManager.getPlugins().get('@eden/plugin-debug-panel')
+    ?? pluginManager.getPlugins().get('debug-panel');
 
-  console.log(`[eden] Chat — profile: ${profileName}, model: ${profile.agent.model.model}${withDebug ? ' [DEBUG]' : ''}`);
-  console.log('输入 /exit 退出\n');
+  const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18791;
+
+  // WebSocket 连接到 debug panel
+  let ws: WebSocket | null = null;
+  let debugState: DebugState | null = null;
 
   if (withDebug && debugPlugin) {
-    const socketPath = (debugPlugin as any).getSocketPath?.() ?? '/tmp/eden-debug.sock';
-    console.log(`[eden] Debug socket: ${socketPath}`);
-    console.log(`[eden] Run 'eden debug --profile ${profileName}' in another terminal to open TUI\n`);
+    ws = new WebSocket(`ws://localhost:${DEBUG_PORT}`);
+    ws.on('open', () => console.log(`[debug] connected ws://localhost:${DEBUG_PORT}`));
+    ws.on('message', (data) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'snapshot') debugState = msg.state;
+      else if (msg.type === 'event') applyEvent(msg.event);
+    });
+    ws.on('close', () => {
+      console.log('[debug] disconnected');
+      ws = null;
+    });
+    ws.on('error', () => { ws = null; });
+
+    // 初始化屏幕
+    initSplitScreen();
+    scheduleRender(() => renderDebug(debugState));
   }
+
+  console.log(`[eden] Chat — ${profileName} | ${profile.agent.model.model}${withDebug ? ' | [DEBUG]' : ''}`);
+  console.log('输入 /exit 退出\n');
 
   const rl = await import('readline').then((m) =>
     m.createInterface({ input: process.stdin, output: process.stdout })
   );
   const messages: any[] = [];
+  const chatLines: string[] = [];
 
   const question = (p: string): Promise<string> => new Promise((r) => rl.question(p, r));
 
+  // 渲染函数
+  const render = () => {
+    if (!withDebug) return;
+    clearLeft();
+    console.log(`${C.bold}${C.cyan}═══ Chat ═══${C.reset}`);
+    chatLines.forEach((l) => console.log(trunc(l, LEFT_WIDTH - 2)));
+  };
+
   while (true) {
-    const input = await question('🧑 你: ');
+    if (withDebug) {
+      // 先显示当前 chat 状态
+      render();
+      scheduleRender(() => renderDebug(debugState));
+    }
+    const input = await question(`${C.green}🧑 你: ${C.reset}`);
     if (!input.trim() || input.trim() === '/exit') break;
 
     const result = await agent.chat(messages, input);
-    console.log(`\n🤖 Eden: ${result.response}\n`);
+    const reply = result.response;
+    console.log(`${C.brightBlue}\n🤖 Eden: ${C.reset}${reply}\n`);
     messages.push({ role: 'user', content: input });
-    messages.push({ role: 'assistant', content: result.response });
+    messages.push({ role: 'assistant', content: reply });
+    chatLines.push(`🧑 你: ${input}`);
+    chatLines.push(`🤖 Eden: ${reply}`);
+
+    if (withDebug) {
+      // 刷新 debug panel
+      scheduleRender(() => renderDebug(debugState));
+    }
   }
 
   rl.close();
+  if (ws) ws.close();
+  process.stdout.write('\x1b[?1049l'); // 恢复屏幕
 }
 
-// ---- dry-run 模式 ----
+// ==================== DRY-RUN 模式 ====================
 
 async function runDryRun() {
   const prompt = args.slice(1).find((a) => !a.startsWith('--')) ?? '';
   const profileName = getFlag('--profile') ?? 'default';
   const send = hasFlag('--send');
 
-  if (!prompt) {
-    console.error('eden dry-run: missing prompt');
-    process.exit(1);
-  }
+  if (!prompt) { console.error('eden dry-run: missing prompt'); process.exit(1); }
 
   const profilesDir = resolveProfileDir();
   const profilePath = join(profilesDir, profileName, 'config.yaml');
-
   if (!existsSync(profilePath)) {
     console.error(`eden: profile "${profileName}" not found at ${profilePath}`);
     process.exit(1);
@@ -243,9 +206,8 @@ async function runDryRun() {
   const debugChannel = new DebugChannel();
   const hookPipeline = new HookPipeline();
   const builtinPlugins = new Map<string, () => any>();
-  const reg = () => createMemoryFilePlugin();
-  builtinPlugins.set('memory-file', reg);
-  builtinPlugins.set('@eden/plugin-memory-file', reg);
+  builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
+  builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
   const pluginManager = new PluginManager(debugChannel, builtinPlugins);
 
   for (const entry of profile.plugins) {
@@ -260,19 +222,14 @@ async function runDryRun() {
 
   const provider = new OpenAIProvider(profile.agent.model);
   const assembler = new SystemPromptAssembler();
-
   const agent = new Agent({
-    pluginManager,
-    provider,
-    hookPipeline,
-    debugChannel,
+    pluginManager, provider, hookPipeline, debugChannel,
     systemPromptAssembler: assembler,
     persona: profile.agent.system.persona,
     model: profile.agent.model.model,
   });
 
   const result = await agent.chat([], prompt, { dryRun: true });
-
   printDryRunOutput(result.context, prompt);
 
   if (send) {
@@ -282,32 +239,95 @@ async function runDryRun() {
   }
 }
 
+// ==================== 分屏渲染（ANSI）====================
+
+let renderTimer: ReturnType<typeof setTimeout> | null = null;
+
+function initSplitScreen() {
+  process.stdout.write('\x1b[?1049h'); // 切换到备用屏幕
+  process.stdout.write('\x1b[2J');     // 清屏
+}
+
+function scheduleRender(fn: () => void) {
+  if (renderTimer) clearTimeout(renderTimer);
+  renderTimer = setTimeout(fn, 50);
+}
+
+function clearLeft() {
+  process.stdout.write('\x1b[H'); // 光标回左上
+  process.stdout.write('\x1b[0J');  // 清除到行尾
+}
+
+function moveTo(col: number, row: number): string {
+  return `\x1b[${row};${col}H`;
+}
+
+function renderDebug(state: DebugState | null) {
+  const C2 = C;
+  process.stdout.write(moveTo(DEBUG_COL, 1));
+
+  let out = `${C2.bold}${C2.cyan}═══ Debug ═══${C2.reset}\n`;
+  out += `${C2.dim}port: ${18791}${C2.reset}\n`;
+
+  if (!state) {
+    out += `${C2.dim}waiting...${C2.reset}`;
+    process.stdout.write(out + '\n');
+    return;
+  }
+
+  out += `${C2.dim}req: ${state.currentRequestId ?? '—'}${C2.reset}\n`;
+  out += `${C2.bold}▸ System (${state.systemPrompt.length}c)${C2.reset}\n`;
+  out += trunc(state.systemPrompt, LEFT_WIDTH - 4) + '\n';
+  out += `${C2.bold}▸ Memory (${state.injectedContext.length})${C2.reset}\n`;
+
+  if (!state.injectedContext.length) {
+    out += `${C2.dim}  empty${C2.reset}\n`;
+  } else {
+    for (const inj of state.injectedContext.slice(0, 5)) {
+      out += `  ${C2.cyan}[${inj.source}]${C2.reset} ${inj.tokens}t\n`;
+      out += `  ${trunc(inj.content, 60)}\n`;
+    }
+    if (state.injectedContext.length > 5) out += `  ${C2.dim}...+${state.injectedContext.length - 5}${C2.reset}\n`;
+  }
+
+  out += `${C2.bold}▸ Tokens${C2.reset}\n`;
+  const u = state.tokenUsage;
+  out += `  in:${C2.yellow}${u.in}${C2.reset} out:${C2.yellow}${u.out}${C2.reset} tot:${C2.yellow}${u.total}${C2.reset}`;
+  if (u.cost != null) out += ` ${C2.green}$${u.cost.toFixed(6)}${C2.reset}`;
+  out += '\n';
+
+  if (state.lastError) {
+    out += `${C2.red}▸ Error: ${trunc(state.lastError, 50)}${C2.reset}\n`;
+  }
+
+  // 填充空白
+  out += '\n'.repeat(Math.max(0, TOTAL_HEIGHT - out.split('\n').length));
+
+  process.stdout.write(out);
+}
+
+function applyEvent(event: any) {
+  // 增量更新 debugState
+  // (full re-render on next tick is fine)
+}
+
+// ==================== DRY-RUN 输出 ====================
+
 function printDryRunOutput(ctx: any, userPrompt: string) {
   const assembler = new SystemPromptAssembler();
-
   console.log('\n=== DRY RUN ================================================\n');
-  const systemPart = ctx.systemPrompt;
-  const tokens = coreEstimateTokens(systemPart);
+  const tokens = coreEstimateTokens(ctx.systemPrompt);
   console.log(`-- System Prompt (${tokens} tokens) --`);
-  console.log(systemPart);
-
+  console.log(ctx.systemPrompt);
   console.log('\n-- Injected Context --');
-  if (ctx.injectedContext.length === 0) {
-    console.log('(无)');
-  } else {
-    for (const inj of ctx.injectedContext) {
-      console.log(`[${inj.source}] ${inj.tokens} tokens`);
-      console.log(inj.content);
-    }
+  if (ctx.injectedContext.length === 0) console.log('(无)');
+  else for (const inj of ctx.injectedContext) {
+    console.log(`[${inj.source}] ${inj.tokens} tokens`);
+    console.log(inj.content);
   }
-
   console.log('\n-- Skills --');
-  if (ctx.activeSkills.length === 0) {
-    console.log('(无)');
-  } else {
-    console.log(ctx.activeSkills.join('\n'));
-  }
-
+  if (ctx.activeSkills.length === 0) console.log('(无)');
+  else console.log(ctx.activeSkills.join('\n'));
   console.log('\n-- Final Messages --');
   const assembled = assembler.assemble(ctx);
   console.log(`system: ${assembled}`);
@@ -315,7 +335,7 @@ function printDryRunOutput(ctx: any, userPrompt: string) {
   console.log('\n============================================================');
 }
 
-// ---- 工具函数 ----
+// ==================== 工具函数 ====================
 
 function resolveProfileDir(): string {
   return process.env.EDEN_PROFILES_DIR ?? join(process.env.HOME ?? '', '.eden', 'profiles');
@@ -330,20 +350,33 @@ function hasFlag(flag: string): boolean {
   return args.includes(flag);
 }
 
+function trunc(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max) + '...';
+}
+
 function printHelp() {
   console.log(`
 eden — Profile-based AI Agent
 
 Usage:
-  eden chat [--profile <name>]           交互式聊天
-  eden chat --profile <name> --debug    聊天 + TUI 分屏
-  eden dry-run "<prompt>" [--profile]  离线预览
-  eden dry-run "<prompt>" --send       预览后调用 LLM
-  eden debug --profile <name>          独立 TUI（连接 socket）
+  eden chat [--profile <name>]          交互式聊天
+  eden chat --profile <name> --debug  聊天 + Debug 分屏（单窗口）
+  eden dry-run "<prompt>" [--profile] 离线预览
+  eden dry-run "<prompt>" --send      预览后调用 LLM
   eden help
 
 Profiles:
   ~/.eden/profiles/<name>/config.yaml
   EDEN_PROFILES_DIR 环境变量可覆盖
 `);
+}
+
+// ==================== 类型 ====================
+
+interface DebugState {
+  currentRequestId: string | null;
+  systemPrompt: string;
+  injectedContext: Array<{ source: string; content: string; tokens: number }>;
+  tokenUsage: { in: number; out: number; total: number; cost?: number };
+  lastError?: string;
 }

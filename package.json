@@ -7,7 +7,11 @@
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "dev": "pnpm -r --parallel run dev",
-    "clean": "pnpm -r run clean"
+    "clean": "pnpm -r run clean",
+    "chat": "node packages/transport-cli/dist/bin/eden.js chat",
+    "dry-run": "node packages/transport-cli/dist/bin/eden.js dry-run",
+    "debug": "node packages/transport-cli/dist/bin/eden.js debug",
+    "eden": "node packages/transport-cli/dist/bin/eden.js"
   },
   "engines": {
     "node": ">=20.0.0"

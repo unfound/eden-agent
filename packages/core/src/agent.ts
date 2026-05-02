@@ -302,6 +302,11 @@ export class Agent {
           const secondChoice = secondResponse.choices[0];
           fullText = secondChoice.message.content ?? '';
 
+          console.log('[eden] tool loop round', round, {
+            content: fullText.slice(0, 100),
+            hasToolCalls: !!secondChoice.message.tool_calls?.length,
+          });
+
           if (!secondChoice.message.tool_calls || secondChoice.message.tool_calls.length === 0) {
             break;
           }

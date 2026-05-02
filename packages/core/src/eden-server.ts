@@ -110,11 +110,16 @@ export class EdenServer {
     console.log('[eden] chat request:', { content: lastUserMsg.content, parts: (lastUserMsg as any).parts, extracted: text });
     if (!text) { this.json(res, { error: 'Empty message' }, 400); return; }
 
-    // 转换消息历史
+    // 转换消息历史（排除最后一条 user message，因为 agent 会单独追加）
     const history: Message[] = aiMessages
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role as Message['role'], content: this.extractText(m) }))
       .filter(m => m.content);
+
+    // 移除最后一条 user message（避免和 userMessage 参数重复）
+    if (history.length > 0 && history[history.length - 1].role === 'user') {
+      history.pop();
+    }
 
     // SSE headers
     res.writeHead(200, {

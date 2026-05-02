@@ -14,16 +14,16 @@ import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "src/components/ui/tooltip";
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogTitle,
   DialogContent,
   DialogTrigger,
-} from "src/components/ui/dialog";
-import { Avatar, AvatarImage, AvatarFallback } from "src/components/ui/avatar";
-import { TooltipIconButton } from "src/components/assistant-ui/tooltip-icon-button";
-import { cn } from "src/lib/utils";
+} from "@/components/ui/dialog";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { cn } from "@/lib/utils";
 
 const useFileSrc = (file: File | undefined) => {
   const [src, setSrc] = useState<string | undefined>(undefined);

@@ -1,5 +1,5 @@
 import { MessageSquareIcon, BugIcon } from "lucide-react"
-import type { Page } from "src/store"
+import type { Page } from "@/store"
 
 interface Props {
   current: Page

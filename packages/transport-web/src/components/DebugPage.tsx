@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useState } from "react"
-import { fetchLogs, fetchLogDetail, type LogSummary, type LogDetail } from "src/lib/api"
+import { fetchLogs, fetchLogDetail, type LogSummary, type LogDetail } from "@/lib/api"
 
 export default function DebugPage() {
   const [logs, setLogs] = useState<LogSummary[]>([])

@@ -1,13 +1,13 @@
 import { AssistantRuntimeProvider, ThreadListPrimitive, ThreadListItemPrimitive, AuiIf } from "@assistant-ui/react"
 import { useChatRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk"
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "src/components/ui/tooltip"
-import { Thread } from "src/components/assistant-ui/thread"
-import Sidebar from "src/components/Sidebar"
-import DebugPage from "src/components/DebugPage"
-import { usePageStore } from "src/store"
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
+import { Thread } from "@/components/assistant-ui/thread"
+import Sidebar from "@/components/Sidebar"
+import DebugPage from "@/components/DebugPage"
+import { usePageStore } from "@/store"
 import { useAuiState } from "@assistant-ui/react"
 import { PlusIcon, MessageSquareIcon, TrashIcon } from "lucide-react"
-import { cn } from "src/lib/utils"
+import { cn } from "@/lib/utils"
 
 /** 会话标题：单行省略 + hover 显示完整文本 */
 const ThreadTitleTooltip = () => {

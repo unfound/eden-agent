@@ -2,24 +2,24 @@ import {
   ComposerAddAttachment,
   ComposerAttachments,
   UserMessageAttachments,
-} from "src/components/assistant-ui/attachment";
-import { MarkdownText } from "src/components/assistant-ui/markdown-text";
+} from "@/components/assistant-ui/attachment";
+import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import {
   Reasoning,
   ReasoningContent,
   ReasoningRoot,
   ReasoningText,
   ReasoningTrigger,
-} from "src/components/assistant-ui/reasoning";
+} from "@/components/assistant-ui/reasoning";
 import {
   ToolGroupContent,
   ToolGroupRoot,
   ToolGroupTrigger,
-} from "src/components/assistant-ui/tool-group";
-import { ToolFallback } from "src/components/assistant-ui/tool-fallback";
-import { TooltipIconButton } from "src/components/assistant-ui/tooltip-icon-button";
-import { Button } from "src/components/ui/button";
-import { cn } from "src/lib/utils";
+} from "@/components/assistant-ui/tool-group";
+import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,

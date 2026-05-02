@@ -212,9 +212,15 @@ function createPlugin(): EdenPlugin {
           }
         }
 
+        const MEMORY_TOOL_PROMPT = `## 记忆系统
+以下是你的长期记忆。你拥有持久记忆能力——用户的偏好、事实、重要决定都会被记住。
+当用户告诉你个人信息（名字、偏好、习惯等）或重要事实时，你必须立即调用 add_memory 将其保存。
+当信息过时或被用户更正时，调用 delete_memory 删除旧记录。
+可用工具：add_memory / delete_memory / search_memory / read_memory`;
+
         pc.injectedContext.push({
           source: 'memory',
-          content: `## 你的记忆\n你有一个记忆文件（MEMORY.md），可以通过 read_memory / add_memory / delete_memory / search_memory 工具来管理它。\n请在对话开始时调用 read_memory 了解上下文，在对话中适时调用 add_memory 记住重要信息。\n\n${memoryBlock || '(记忆文件为空)'}`,
+          content: `${MEMORY_TOOL_PROMPT}\n\n${memoryBlock || '(暂无记忆)'}`,
           tokens: memoryBlock ? Math.min(estimateTokens(memoryBlock), cfg.maxTokens!) : 0,
         });
       },

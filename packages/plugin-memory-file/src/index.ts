@@ -1,141 +1,224 @@
 /**
  * @eden/plugin-memory-file
  *
- * 基于文件的记忆插件。
- * - onPreProcess: 读取记忆文件，注入到 ProcessContext
- * - onPostProcess: 将本次对话追加到记忆文件
+ * MEMORY.md 记忆插件。
+ *
+ * 设计理念：
+ * - 记忆存储在 MEMORY.md（人类可读的 Markdown 文件）
+ * - LLM 通过 tools 自主管理记忆（增删改查）
+ * - 每次对话前将 MEMORY.md 内容注入上下文
+ *
+ * Tools:
+ *   read_memory   — 读取完整记忆文件
+ *   add_memory    — 追加一条记忆
+ *   delete_memory — 删除指定记忆（按行号）
+ *   search_memory — 搜索记忆（关键词匹配）
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import type { EdenPlugin, PluginContext, ProcessContext, ContextInjection } from '@eden/core';
-
-interface MemoryEntry {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-}
+import { join, dirname } from 'path';
+import type { EdenPlugin, PluginContext, ProcessContext, ContextInjection, CoreTool } from '@eden/core';
 
 interface MemoryConfig {
-  path?: string;       // 相对于 profileDir，默认 "memory/"
-  maxEntries?: number; // 最多保留条数，默认 100
-  maxTokens?: number;  // 最多注入 tokens，默认 300
-}
-
-function lastOfRole(messages: any[], role: string): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === role) return messages[i].content;
-  }
-  return null;
-}
-
-function newId(): string {
-  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  path?: string;       // 相对于 profileDir，默认 "MEMORY.md"
+  maxTokens?: number;  // 注入记忆的最大 token 数，默认 500
 }
 
 function createPlugin(): EdenPlugin {
   let ctx: PluginContext | null = null;
-  let cfg: MemoryConfig = { path: 'memory/', maxEntries: 100, maxTokens: 300 };
+  let cfg: MemoryConfig = { path: 'MEMORY.md', maxTokens: 500 };
 
-  function memDir(): string {
+  function memFile(): string {
     return join(ctx!.profileDir, cfg.path!);
   }
 
-  function memFile(): string {
-    return join(memDir(), 'memory.jsonl');
-  }
-
-  function ensureDir(): void {
-    if (!existsSync(memDir())) mkdirSync(memDir(), { recursive: true });
-  }
-
-  function loadEntries(): MemoryEntry[] {
+  function readMemory(): string {
     try {
-      const raw = readFileSync(memFile(), 'utf-8');
-      return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as MemoryEntry);
+      return readFileSync(memFile(), 'utf-8');
     } catch {
-      return [];
+      return '';
     }
   }
 
-  function buildInjection(entries: MemoryEntry[]): ContextInjection | null {
-    const lines: string[] = [];
+  function writeMemory(content: string): void {
+    const filePath = memFile();
+    const dir = dirname(filePath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(filePath, content, 'utf-8');
+  }
+
+  function estimateTokens(text: string): number {
+    // 粗略估算：中文 ~2 chars/token，英文 ~4 chars/token
     let chars = 0;
-    const maxChars = cfg.maxTokens! * 3.5;
-
-    for (const entry of [...entries].reverse()) {
-      const prefix = entry.role === 'user' ? '[记-用户]' : '[记-助手]';
-      const line = `${prefix} ${entry.content}`;
-      if (chars + line.length > maxChars) break;
-      lines.push(line);
-      chars += line.length;
-    }
-
-    if (lines.length === 0) return null;
-
-    return {
-      source: 'memory-file',
-      content: lines.join('\n'),
-      tokens: Math.ceil(chars / 3.5),
-      metadata: { count: lines.length },
-    };
+    for (const ch of text) chars += ch.charCodeAt(0) > 127 ? 2 : 1;
+    return Math.ceil(chars / 3.5);
   }
+
+  // ── Tools ────────────────────────────────────────
+
+  const tools: Record<string, CoreTool> = {
+    read_memory: {
+      description: '读取 Agent 的记忆文件（MEMORY.md）。在对话开始时调用以了解之前的上下文。',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+      async execute(): Promise<string> {
+        const content = readMemory();
+        return content || '(记忆文件为空)';
+      },
+    },
+
+    add_memory: {
+      description: '向记忆文件追加一条新记忆。用于记住用户偏好、重要事实、决策等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          category: {
+            type: 'string',
+            description: '记忆分类，如 "用户偏好"、"事实"、"决策"、"上下文"',
+          },
+          content: {
+            type: 'string',
+            description: '要记忆的内容，简洁的一句话',
+          },
+        },
+        required: ['category', 'content'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const category = String(args.category ?? '').trim();
+        const content = String(args.content ?? '').trim();
+        if (!category || !content) return 'Error: category 和 content 不能为空';
+
+        let memory = readMemory();
+        const header = `# Agent Memory\n\n`;
+
+        // 如果记忆文件为空，创建基础结构
+        if (!memory) {
+          memory = header;
+        }
+
+        // 查找或创建分类标题
+        const sectionHeader = `## ${category}\n`;
+        const sectionIdx = memory.indexOf(sectionHeader);
+
+        if (sectionIdx >= 0) {
+          // 找到已有分类，在该分类末尾追加
+          const afterSection = memory.indexOf('\n## ', sectionIdx + sectionHeader.length);
+          const insertPos = afterSection >= 0 ? afterSection : memory.length;
+          const line = `- ${content}\n`;
+          memory = memory.slice(0, insertPos) + line + memory.slice(insertPos);
+        } else {
+          // 没有该分类，追加到文件末尾
+          memory = memory.trimEnd() + `\n\n${sectionHeader}\n- ${content}\n`;
+        }
+
+        writeMemory(memory);
+        return `已记忆: [${category}] ${content}`;
+      },
+    },
+
+    delete_memory: {
+      description: '从记忆文件中删除指定行。先用 read_memory 查看内容，再用行号删除。',
+      parameters: {
+        type: 'object',
+        properties: {
+          line_number: {
+            type: 'number',
+            description: '要删除的行号（从 1 开始）',
+          },
+        },
+        required: ['line_number'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const lineNum = Number(args.line_number);
+        if (!lineNum || lineNum < 1) return 'Error: 无效的行号';
+
+        const memory = readMemory();
+        if (!memory) return 'Error: 记忆文件为空';
+
+        const lines = memory.split('\n');
+        if (lineNum > lines.length) return `Error: 行号超出范围（共 ${lines.length} 行）`;
+
+        const deleted = lines[lineNum - 1];
+        lines.splice(lineNum - 1, 1);
+        writeMemory(lines.join('\n'));
+        return `已删除第 ${lineNum} 行: ${deleted}`;
+      },
+    },
+
+    search_memory: {
+      description: '在记忆文件中搜索关键词，返回匹配的行。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: '搜索关键词',
+          },
+        },
+        required: ['query'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const query = String(args.query ?? '').trim().toLowerCase();
+        if (!query) return 'Error: 搜索关键词不能为空';
+
+        const memory = readMemory();
+        if (!memory) return '(记忆文件为空)';
+
+        const lines = memory.split('\n');
+        const matches: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].toLowerCase().includes(query)) {
+            matches.push(`L${i + 1}: ${lines[i]}`);
+          }
+        }
+
+        return matches.length > 0
+          ? `找到 ${matches.length} 条匹配:\n${matches.join('\n')}`
+          : `未找到包含 "${query}" 的记忆`;
+      },
+    },
+  };
 
   return {
     name: 'memory-file',
-    version: '0.1.0',
+    version: '0.2.0',
 
     async init(pluginCtx) {
       ctx = pluginCtx;
       const raw = pluginCtx.config as MemoryConfig;
       cfg = {
-        path: raw.path ?? 'memory/',
-        maxEntries: raw.maxEntries ?? 100,
-        maxTokens: raw.maxTokens ?? 300,
+        path: raw.path ?? 'MEMORY.md',
+        maxTokens: raw.maxTokens ?? 500,
       };
     },
 
     hooks: {
-      async onPreProcess(pc) {
+      async onPreProcess(pc: ProcessContext) {
         if (!ctx) return;
-        const entries = loadEntries();
-        if (entries.length === 0) return;
-        const inj = buildInjection(entries);
-        if (inj) pc.injectedContext.push(inj);
-      },
+        const content = readMemory();
+        if (!content.trim()) return;
 
-      async onPostProcess(pc) {
-        if (!ctx) return;
-        const userMsg = lastOfRole(pc.messages, 'user');
-        const asstMsg = lastOfRole(pc.messages, 'assistant');
-        if (!userMsg && !asstMsg) return;
-
-        ensureDir();
-        const lines: string[] = [];
-        if (userMsg) {
-          lines.push(JSON.stringify({ id: newId(), role: 'user', content: userMsg, timestamp: Date.now() }));
+        const tokens = estimateTokens(content);
+        // 截断到最大 token 数
+        let injected = content;
+        if (tokens > cfg.maxTokens!) {
+          // 保留前面的内容（重要信息通常在前面）
+          const maxChars = cfg.maxTokens! * 3.5;
+          injected = content.slice(0, maxChars) + '\n...(已截断)';
         }
-        if (asstMsg) {
-          lines.push(JSON.stringify({ id: newId(), role: 'assistant', content: asstMsg, timestamp: Date.now() }));
-        }
-        if (lines.length === 0) return;
 
-        try {
-          const existing = existsSync(memFile()) ? readFileSync(memFile(), 'utf-8') : '';
-          writeFileSync(memFile(), existing + lines.join('\n') + '\n', 'utf-8');
-        } catch { /* ignore */ }
-
-        // prune
-        const entries = loadEntries();
-        if (entries.length > cfg.maxEntries!) {
-          const kept = entries.slice(-cfg.maxEntries!);
-          try {
-            writeFileSync(memFile(), kept.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
-          } catch { /* ignore */ }
-        }
+        pc.injectedContext.push({
+          source: 'memory',
+          content: `## 你的记忆\n你有一个记忆文件（MEMORY.md），可以通过 read_memory / add_memory / delete_memory / search_memory 工具来管理它。\n请在对话开始时调用 read_memory 了解上下文，在对话中适时调用 add_memory 记住重要信息。\n\n${injected}`,
+          tokens: Math.min(tokens, cfg.maxTokens!),
+        });
       },
     },
+
+    tools,
   };
 }
 

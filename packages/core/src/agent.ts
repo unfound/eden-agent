@@ -4,8 +4,8 @@
  * 1. 初始化 ProcessContext
  * 2. 收集所有插件的 onPreProcess 注入上下文
  * 3. 组装 system prompt
- * 4. 调用 LLM
- * 5. 处理工具调用（循环）
+ * 4. 调用 LLM（支持 tools）
+ * 5. 处理工具调用（循环，最多 MAX_TOOL_ROUNDS 轮）
  * 6. 调用 onPostProcess
  * 7. 返回最终文本
  */
@@ -19,12 +19,16 @@ import type {
   TokenUsage,
   ChatCompletionMessage,
   ModelProvider,
+  ToolDefinition,
+  CoreTool,
 } from './types.js';
 import { HookPipeline } from './hook-pipeline.js';
 import { PluginManager } from './plugin-manager.js';
 import { SystemPromptAssembler } from './system-prompt.js';
 import { DebugChannel } from './debug-channel.js';
 import { estimateTokens, estimateCost } from './provider.js';
+
+const MAX_TOOL_ROUNDS = 5;
 
 export interface AgentOptions {
   pluginManager: PluginManager;
@@ -48,25 +52,76 @@ export class Agent {
     return this.options.debugChannel;
   }
 
-  /**
-   * 单轮对话（非流式）
-   */
+  // ── 工具收集与执行 ────────────────────────────────
+
+  /** 从所有已启用插件收集 tools，转换为 LLM 格式 */
+  private collectToolDefinitions(): ToolDefinition[] {
+    const { pluginManager } = this.options;
+    const defs: ToolDefinition[] = [];
+    for (const [name, plugin] of pluginManager.getPlugins()) {
+      if (!plugin.tools) continue;
+      for (const [toolName, tool] of Object.entries(plugin.tools)) {
+        defs.push({
+          type: 'function',
+          function: {
+            name: toolName,
+            description: tool.description,
+            parameters: tool.parameters,
+          },
+        });
+      }
+    }
+    return defs;
+  }
+
+  /** 执行一个工具调用，返回结果字符串 */
+  private async executeTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+    const { pluginManager } = this.options;
+    for (const [, plugin] of pluginManager.getPlugins()) {
+      if (!plugin.tools) continue;
+      const tool = plugin.tools[toolName];
+      if (tool) {
+        try {
+          const result = await tool.execute(args);
+          return typeof result === 'string' ? result : JSON.stringify(result);
+        } catch (err) {
+          return `Error: ${(err as Error).message}`;
+        }
+      }
+    }
+    return `Error: tool "${toolName}" not found`;
+  }
+
+  // ── 非流式对话 ───────────────────────────────────
+
   async chat(
     messages: Message[],
     userMessage: string,
     opts?: { dryRun?: boolean; activeSkills?: string[] }
   ): Promise<{ response: string; usage: TokenUsage; context: ProcessContext }> {
-    const { pluginManager, provider, hookPipeline, debugChannel, systemPromptAssembler, persona, model } = this.options;
+    const { provider, hookPipeline, debugChannel, systemPromptAssembler, persona, model } = this.options;
     const requestId = debugChannel.newRequestId();
 
     const ctx = this.initContext(requestId, persona, messages, opts?.activeSkills ?? []);
     ctx.injectedContext = await this.collectInjectedContext(hookPipeline, ctx);
 
-    const pluginBudgets = this.getPluginBudgets(pluginManager);
+    const pluginBudgets = this.getPluginBudgets();
     systemPromptAssembler.applyTokenBudget(ctx, pluginBudgets);
 
     const systemPrompt = systemPromptAssembler.assemble(ctx);
-    const llmMessages = this.buildMessages(systemPrompt, messages, userMessage);
+    const toolDefs = this.collectToolDefinitions();
+
+    // 构建消息
+    const llmMessages: ChatCompletionMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...messages.map((m) => ({
+        role: m.role as 'user' | 'assistant' | 'system' | 'tool',
+        content: m.content,
+        name: m.name,
+        tool_call_id: m.toolCallId,
+      })),
+      { role: 'user', content: userMessage },
+    ];
 
     debugChannel.emit('request_start', requestId, {
       systemPrompt,
@@ -78,9 +133,10 @@ export class Agent {
       return { response: '', usage: ctx.tokenUsage, context: ctx };
     }
 
+    // Tool call loop
     let assistantMessage = '';
-    try {
-      const response = await provider.chat(llmMessages);
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const response = await provider.chat(llmMessages, toolDefs.length > 0 ? toolDefs : undefined);
       const choice = response.choices[0];
 
       if (response.usage) {
@@ -91,39 +147,51 @@ export class Agent {
       }
 
       assistantMessage = choice.message.content ?? '';
-      ctx.messages.push({ role: 'user', content: userMessage });
-      if (assistantMessage) {
-        ctx.messages.push({ role: 'assistant', content: assistantMessage });
+
+      // 没有 tool_calls，结束循环
+      if (!choice.message.tool_calls || choice.message.tool_calls.length === 0) {
+        break;
       }
-      debugChannel.emit('request_end', requestId, {
-        response: assistantMessage,
-        usage: ctx.tokenUsage,
-        messages: ctx.messages,
-        rawResponse: {
-          content: assistantMessage,
-          finishReason: response.choices[0].finish_reason,
-          model: response.model,
-          id: response.id,
-        },
-      });
-    } catch (err) {
-      debugChannel.emit('error', requestId, { error: (err as Error).message });
-      await hookPipeline.onPostProcess(ctx);
-      throw err;
+
+      // 执行工具调用
+      const toolCalls = choice.message.tool_calls;
+      llmMessages.push(choice.message);
+
+      for (const tc of toolCalls) {
+        const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+        debugChannel.emit('tool_called', requestId, { name: tc.function.name, args });
+        const result = await this.executeTool(tc.function.name, args);
+        debugChannel.emit('tool_result', requestId, { name: tc.function.name, result });
+
+        ctx.toolCalls.push({ id: tc.id, name: tc.function.name, args: tc.function.arguments, result });
+
+        llmMessages.push({
+          role: 'tool',
+          content: result,
+          tool_call_id: tc.id,
+        });
+      }
     }
+
+    ctx.messages.push({ role: 'user', content: userMessage });
+    if (assistantMessage) {
+      ctx.messages.push({ role: 'assistant', content: assistantMessage });
+    }
+
+    debugChannel.emit('request_end', requestId, {
+      response: assistantMessage,
+      usage: ctx.tokenUsage,
+      messages: ctx.messages,
+      rawResponse: { content: assistantMessage, finishReason: 'stop' },
+    });
 
     await hookPipeline.onPostProcess(ctx);
 
     return { response: assistantMessage, usage: ctx.tokenUsage, context: ctx };
   }
 
-  /**
-   * 流式对话 — 每收到一个 token 就 yield 当前累积文本
-   * 返回 { stream, usage, context }
-   * - stream: AsyncGenerator<string> — 每次 yield 完整累积文本
-   * - usage: Promise<TokenUsage> — 流结束后解析
-   * - context: 最终 ProcessContext
-   */
+  // ── 流式对话 ─────────────────────────────────────
+
   async chatStream(
     messages: Message[],
     userMessage: string,
@@ -133,17 +201,28 @@ export class Agent {
     usage: Promise<TokenUsage>;
     context: ProcessContext;
   }> {
-    const { pluginManager, provider, hookPipeline, debugChannel, systemPromptAssembler, persona, model } = this.options;
+    const { provider, hookPipeline, debugChannel, systemPromptAssembler, persona, model } = this.options;
     const requestId = debugChannel.newRequestId();
 
     const ctx = this.initContext(requestId, persona, messages, opts?.activeSkills ?? []);
     ctx.injectedContext = await this.collectInjectedContext(hookPipeline, ctx);
 
-    const pluginBudgets = this.getPluginBudgets(pluginManager);
+    const pluginBudgets = this.getPluginBudgets();
     systemPromptAssembler.applyTokenBudget(ctx, pluginBudgets);
 
     const systemPrompt = systemPromptAssembler.assemble(ctx);
-    const llmMessages = this.buildMessages(systemPrompt, messages, userMessage);
+    const toolDefs = this.collectToolDefinitions();
+
+    const llmMessages: ChatCompletionMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...messages.map((m) => ({
+        role: m.role as 'user' | 'assistant' | 'system' | 'tool',
+        content: m.content,
+        name: m.name,
+        tool_call_id: m.toolCallId,
+      })),
+      { role: 'user', content: userMessage },
+    ];
 
     debugChannel.emit('request_start', requestId, {
       systemPrompt,
@@ -151,10 +230,19 @@ export class Agent {
       rawRequest: llmMessages,
     });
 
-    const { textStream, usage: streamUsage } = await provider.chatStream(llmMessages);
+    const chatStreamResult = await provider.chatStream(
+      llmMessages,
+      toolDefs.length > 0 ? toolDefs : undefined
+    );
+    const { textStream, usage: streamUsage } = chatStreamResult;
+    // toolCalls 由 provider 流式收集，流结束后通过 getter 获取
+    const getToolCalls = typeof (chatStreamResult as any).toolCalls === 'function'
+      ? () => (chatStreamResult as any).toolCalls()
+      : () => [];
+
     let fullText = '';
 
-    const usagePromise = streamUsage.then((u: { in: number; out: number; total: number }) => {
+    const usagePromise = streamUsage.then((u) => {
       ctx.tokenUsage = {
         in: u.in,
         out: u.out,
@@ -164,20 +252,12 @@ export class Agent {
       return ctx.tokenUsage;
     });
 
-    async function* generateStream(): AsyncGenerator<string, void, void> {
-      for await (const text of textStream) {
-        fullText = text;
-        yield fullText;
-      }
-    }
-
-    // Wrap generator to handle post-process after stream ends
     const self = this;
-    const originalStream = generateStream();
 
     async function* wrappedStream(): AsyncGenerator<string, void, void> {
       try {
-        for await (const text of originalStream) {
+        for await (const text of textStream) {
+          fullText = text;
           yield text;
         }
       } catch (err) {
@@ -185,7 +265,58 @@ export class Agent {
         throw err;
       }
 
-      // Stream ended — finalize
+      // 流结束后，处理 tool calls
+      const toolCallsFromStream = getToolCalls();
+      if (toolCallsFromStream.length > 0) {
+        // 把第一轮 LLM 响应加入消息历史
+        const assistantMsg: ChatCompletionMessage = {
+          role: 'assistant',
+          content: fullText,
+          tool_calls: toolCallsFromStream.map((tc: any) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: tc.arguments },
+          })),
+        };
+        llmMessages.push(assistantMsg);
+
+        // Tool call loop
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+          for (const tc of toolCallsFromStream) {
+            const args = JSON.parse(tc.arguments || '{}') as Record<string, unknown>;
+            debugChannel.emit('tool_called', requestId, { name: tc.name, args });
+            const result = await self.executeTool(tc.name, args);
+            debugChannel.emit('tool_result', requestId, { name: tc.name, result });
+
+            ctx.toolCalls.push({ id: tc.id, name: tc.name, args: tc.arguments, result });
+
+            llmMessages.push({
+              role: 'tool',
+              content: result,
+              tool_call_id: tc.id,
+            });
+          }
+
+          // 工具执行完后，再调一次 LLM
+          const secondResponse = await provider.chat(llmMessages);
+          const secondChoice = secondResponse.choices[0];
+          fullText = secondChoice.message.content ?? '';
+
+          if (!secondChoice.message.tool_calls || secondChoice.message.tool_calls.length === 0) {
+            break;
+          }
+
+          // 还有 tool calls，继续循环
+          llmMessages.push(secondChoice.message);
+          toolCallsFromStream.length = 0;
+          toolCallsFromStream.push(...secondChoice.message.tool_calls.map((tc: any) => ({
+            id: tc.id,
+            name: tc.function.name,
+            arguments: tc.function.arguments,
+          })));
+        }
+      }
+
       ctx.messages.push({ role: 'user', content: userMessage });
       if (fullText) {
         ctx.messages.push({ role: 'assistant', content: fullText });
@@ -195,10 +326,7 @@ export class Agent {
         response: fullText,
         usage: ctx.tokenUsage,
         messages: ctx.messages,
-        rawResponse: {
-          content: fullText,
-          finishReason: 'stop',
-        },
+        rawResponse: { content: fullText, finishReason: 'stop' },
       });
 
       try {
@@ -211,22 +339,7 @@ export class Agent {
     return { stream: wrappedStream(), usage: usagePromise, context: ctx };
   }
 
-  private buildMessages(
-    systemPrompt: string,
-    messages: Message[],
-    userMessage: string
-  ): ChatCompletionMessage[] {
-    return [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({
-        role: m.role as 'user' | 'assistant' | 'system' | 'tool',
-        content: m.content,
-        name: m.name,
-        tool_call_id: m.toolCallId,
-      })),
-      { role: 'user', content: userMessage },
-    ];
-  }
+  // ── 内部工具 ─────────────────────────────────────
 
   private initContext(
     requestId: string,
@@ -253,9 +366,9 @@ export class Agent {
     return ctx.injectedContext;
   }
 
-  private getPluginBudgets(pluginManager: PluginManager): Map<string, number> {
+  private getPluginBudgets(): Map<string, number> {
     const budgets = new Map<string, number>();
-    for (const [name] of pluginManager.getPlugins()) {
+    for (const [name] of this.options.pluginManager.getPlugins()) {
       budgets.set(name, 0);
     }
     return budgets;

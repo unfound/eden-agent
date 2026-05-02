@@ -46,7 +46,7 @@ export interface PluginHooks {
 export interface CoreTool {
   description: string;
   parameters: Record<string, unknown>;
-  execute(args: Record<string, unknown>, ctx: PluginContext): Promise<unknown>;
+  execute(args: Record<string, unknown>): Promise<unknown>;
 }
 
 export interface SkillProvider {
@@ -78,7 +78,7 @@ export interface ContextInjection {
 export interface ToolCallRecord {
   id: string;
   name: string;
-  args: Record<string, unknown>;
+  args: Record<string, unknown> | string;
   result?: unknown;
   error?: string;
   latencyMs?: number;
@@ -139,9 +139,18 @@ export interface ChatCompletionResponse {
   };
 }
 
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
 export interface ModelProvider {
-  chat(messages: ChatCompletionMessage[]): Promise<ChatCompletionResponse>;
-  chatStream(messages: ChatCompletionMessage[]): Promise<{
+  chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse>;
+  chatStream(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<{
     textStream: AsyncGenerator<string, void, void>;
     usage: Promise<{ in: number; out: number; total: number }>;
   }>;

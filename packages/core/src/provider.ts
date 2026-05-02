@@ -5,13 +5,22 @@
  * 配置驱动切换，无需改动调用代码。
  */
 
-import type { ChatCompletionMessage, ChatCompletionResponse, ModelConfig, ModelProvider } from './types.js';
+import type { ChatCompletionMessage, ChatCompletionResponse, ModelConfig, ModelProvider, ToolDefinition } from './types.js';
 
 export class OpenAIProvider implements ModelProvider {
   constructor(private config: ModelConfig) {}
 
-  async chat(messages: ChatCompletionMessage[]): Promise<ChatCompletionResponse> {
+  async chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
     const { baseURL, model, apiKey } = this.config;
+
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      stream: false,
+      ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
+      ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
+    };
+    if (tools && tools.length > 0) body.tools = tools;
 
     const response = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -19,13 +28,7 @@ export class OpenAIProvider implements ModelProvider {
         'Content-Type': 'application/json',
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        stream: false,
-        ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
-        ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -39,16 +42,25 @@ export class OpenAIProvider implements ModelProvider {
   /**
    * 流式调用 LLM，逐 token 产出文本
    * 返回 [textStream, usagePromise]
-   * - textStream: AsyncGenerator<string, void, void> — 每个 yield 产出最新累积文本
-   * - usagePromise: Promise<{ in: number; out: number; total: number }> — 流结束后获取用量
    */
   async chatStream(
-    messages: ChatCompletionMessage[]
+    messages: ChatCompletionMessage[],
+    tools?: ToolDefinition[]
   ): Promise<{
     textStream: AsyncGenerator<string, void, void>;
     usage: Promise<{ in: number; out: number; total: number }>;
   }> {
     const { baseURL, model, apiKey } = this.config;
+
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
+      ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
+    };
+    if (tools && tools.length > 0) body.tools = tools;
 
     const response = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -56,14 +68,7 @@ export class OpenAIProvider implements ModelProvider {
         'Content-Type': 'application/json',
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        stream: true,
-        stream_options: { include_usage: true },
-        ...(this.config.maxTokens ? { max_tokens: this.config.maxTokens } : {}),
-        ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -75,12 +80,15 @@ export class OpenAIProvider implements ModelProvider {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    let usageResolver: (v: { in: number; out: number; total: number }) => void;
+    let usageResolver!: (v: { in: number; out: number; total: number }) => void;
     const usagePromise = new Promise<{ in: number; out: number; total: number }>((r) => { usageResolver = r; });
 
     let accumulatedText = '';
     let done = false;
     let finalUsage = { in: 0, out: 0, total: 0 };
+
+    // 收集 tool_calls（流式拼接）
+    const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
 
     async function* generate(): AsyncGenerator<string, void, void> {
       while (!done) {
@@ -99,18 +107,42 @@ export class OpenAIProvider implements ModelProvider {
 
           try {
             const parsed = JSON.parse(data);
-            // usage chunk (some providers send usage in a final chunk)
+            // usage chunk
             if (parsed.usage) {
               finalUsage = {
                 in: parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? 0,
                 out: parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? 0,
-                total: parsed.usage.total_tokens ?? parsed.usage.total_tokens ?? 0,
+                total: parsed.usage.total_tokens ?? 0,
               };
             }
-            const delta = parsed.choices?.[0]?.delta?.content;
+            const choice = parsed.choices?.[0];
+            if (!choice) continue;
+
+            // 文本 delta
+            const delta = choice.delta?.content;
             if (delta) {
               accumulatedText += delta;
               yield accumulatedText;
+            }
+
+            // tool_calls delta
+            const toolDeltas = choice.delta?.tool_calls;
+            if (Array.isArray(toolDeltas)) {
+              for (const td of toolDeltas) {
+                const idx = td.index ?? 0;
+                const existing = toolCallsMap.get(idx);
+                if (existing) {
+                  if (td.id) existing.id = td.id;
+                  if (td.function?.name) existing.name = td.function.name;
+                  if (td.function?.arguments) existing.arguments += td.function.arguments;
+                } else {
+                  toolCallsMap.set(idx, {
+                    id: td.id ?? '',
+                    name: td.function?.name ?? '',
+                    arguments: td.function?.arguments ?? '',
+                  });
+                }
+              }
             }
           } catch {
             // skip unparseable lines
@@ -120,7 +152,20 @@ export class OpenAIProvider implements ModelProvider {
       usageResolver(finalUsage);
     }
 
-    return { textStream: generate(), usage: usagePromise };
+    const stream = generate();
+
+    // 包装 generator，在流结束后暴露 toolCalls
+    const self = this;
+    async function* wrappedStream(): AsyncGenerator<string, void, void> {
+      for await (const text of stream) {
+        yield text;
+      }
+    }
+
+    // 暴露 toolCalls（流结束后可读）
+    const result = { textStream: wrappedStream(), usage: usagePromise };
+    (result as any).toolCalls = () => Array.from(toolCallsMap.values());
+    return result;
   }
 }
 

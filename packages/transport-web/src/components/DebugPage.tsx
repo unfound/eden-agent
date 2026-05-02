@@ -4,23 +4,26 @@
  * 左栏：会话记录（从日志读取）
  * 右栏：调试详情
  *
- * 下拉选择历史日志，默认显示最新一条。
+ * 功能：查看日志、删除日志、复制日志目录
  */
 
 import { useEffect, useState } from "react"
-import { fetchLogs, fetchLogDetail, type LogSummary, type LogDetail } from "@/lib/api"
+import { fetchLogs, fetchLogDetail, fetchDebugConfig, deleteLog, type LogSummary, type LogDetail, type DebugConfig } from "@/lib/api"
+import { TrashIcon, CopyIcon, CheckIcon, FolderOpenIcon } from "lucide-react"
 
 export default function DebugPage() {
   const [logs, setLogs] = useState<LogSummary[]>([])
   const [selectedLogId, setSelectedLogId] = useState<string | null>(null)
   const [detail, setDetail] = useState<LogDetail | null>(null)
   const [loading, setLoading] = useState(false)
+  const [config, setConfig] = useState<DebugConfig | null>(null)
+  const [copied, setCopied] = useState(false)
 
-  // 加载日志列表
+  // 加载配置 + 日志列表
   useEffect(() => {
+    fetchDebugConfig().then(setConfig)
     fetchLogs().then(list => {
       setLogs(list)
-      // 自动选中最新一条
       if (list.length > 0 && !selectedLogId) {
         setSelectedLogId(list[0].id)
       }
@@ -45,6 +48,24 @@ export default function DebugPage() {
   }, [selectedLogId])
 
   const selectedLog = logs.find(l => l.id === selectedLogId)
+
+  // 复制日志目录
+  const copyLogDir = () => {
+    if (!config?.logDir) return
+    navigator.clipboard.writeText(config.logDir)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  // 删除日志
+  const handleDelete = async (logId: string) => {
+    await deleteLog(logId)
+    setLogs(prev => prev.filter(l => l.id !== logId))
+    if (selectedLogId === logId) {
+      setSelectedLogId(null)
+      setDetail(null)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -71,6 +92,32 @@ export default function DebugPage() {
             {selectedLog.model && ` · ${selectedLog.model}`}
           </span>
         )}
+
+        <div className="ml-auto flex items-center gap-2">
+          {/* 日志目录 */}
+          {config && (
+            <button
+              onClick={copyLogDir}
+              className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              title="点击复制日志目录路径"
+            >
+              <FolderOpenIcon className="size-3.5" />
+              <span className="max-w-[200px] truncate font-mono">{config.logDir}</span>
+              {copied ? <CheckIcon className="size-3.5 text-green-500" /> : <CopyIcon className="size-3.5" />}
+            </button>
+          )}
+
+          {/* 删除当前日志 */}
+          {selectedLogId && (
+            <button
+              onClick={() => handleDelete(selectedLogId)}
+              className="flex items-center gap-1 rounded-md border border-destructive/30 px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              <TrashIcon className="size-3.5" />
+              删除
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Body: 左右布局 ── */}

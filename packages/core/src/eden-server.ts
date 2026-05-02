@@ -9,7 +9,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { mkdirSync, writeFileSync, readdirSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { Agent, Message } from './index.js';
 
@@ -88,9 +88,15 @@ export class EdenServer {
     if (method === 'GET' && url === '/api/debug/logs') {
       return this.handleListLogs(res);
     }
+    if (method === 'GET' && url === '/api/debug/config') {
+      return this.handleGetConfig(res);
+    }
     const logMatch = url.match(/^\/api\/debug\/logs\/([^/]+)$/);
     if (method === 'GET' && logMatch) {
       return this.handleGetLog(res, logMatch[1]);
+    }
+    if (method === 'DELETE' && logMatch) {
+      return this.handleDeleteLog(res, logMatch[1]);
     }
 
     res.writeHead(404);
@@ -225,6 +231,24 @@ export class EdenServer {
     }
     const data = JSON.parse(readFileSync(filePath, 'utf-8'));
     this.json(res, data);
+  }
+
+  private handleGetConfig(res: ServerResponse) {
+    this.json(res, { logDir: LOG_DIR });
+  }
+
+  private handleDeleteLog(res: ServerResponse, logId: string) {
+    const filePath = join(LOG_DIR, `${logId}.json`);
+    if (!existsSync(filePath)) {
+      this.json(res, { error: 'Not found' }, 404);
+      return;
+    }
+    try {
+      unlinkSync(filePath);
+      this.json(res, { ok: true });
+    } catch (err) {
+      this.json(res, { error: (err as Error).message }, 500);
+    }
   }
 
   // ── 日志持久化 ──────────────────────────────────────

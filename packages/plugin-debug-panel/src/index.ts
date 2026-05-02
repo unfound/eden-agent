@@ -9,7 +9,7 @@
 import type { EdenPlugin, PluginContext, DebugEvent } from '@eden/core';
 import { WebSocketServer, WebSocket } from 'ws';
 
-const DEBUG_PORT = 18791;
+const DEBUG_PORT = 18888;
 
 interface DebugState {
   currentRequestId: string | null;

@@ -4,17 +4,19 @@
  *
  * pnpm chat --profile novelist
  * pnpm chat --profile novelist --debug
+ * pnpm chat --profile novelist --tui         ← 启动 OpenTUI
  * pnpm dry-run "prompt" --profile novelist
  */
 
 import React, { useState, useEffect } from 'react';
 import { render, useInput, Box, Text } from 'ink';
-import { Agent, HookPipeline, PluginManager, DebugChannel, SystemPromptAssembler, OpenAIProvider } from '@eden/core';
+import { Agent, HookPipeline, PluginManager, DebugChannel, SystemPromptAssembler, OpenAIProvider, TuiServer } from '@eden/core';
 import createMemoryFilePlugin from '@eden/plugin-memory-file';
 import { createPlugin as createDebugPanelPlugin } from '@eden/plugin-debug-panel';
 import { ConfigLoader } from '@eden/core';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { spawn } from 'child_process';
 import { WebSocket } from 'ws';
 import { DebugState, CumulativeUsage } from './components/DebugPanel.js';
 import { Header } from './components/Header.js';
@@ -30,8 +32,14 @@ const command = args[0] ?? 'chat';
 // ==================== 入口 ====================
 
 async function main() {
-  if (command === 'chat') {
-    await runChat();
+  if (command === 'server') {
+    await runServer();
+  } else if (command === 'chat') {
+    if (hasFlag('--tui')) {
+      await runTui();
+    } else {
+      await runChat();
+    }
   } else if (command === 'dry-run') {
     await runDryRun();
   } else if (command === 'help') {
@@ -106,7 +114,7 @@ async function runChat() {
   });
 
   const debugPlugin = pluginManager.getPlugins().get('@eden/plugin-debug-panel');
-  const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18791;
+  const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18888;
 
   if (withDebug && debugPlugin) {
     (debugPlugin as any)?.start?.();
@@ -125,6 +133,178 @@ async function runChat() {
   );
 
   return app.waitUntilExit();
+}
+
+// ==================== TUI 模式（OpenTUI） ====================
+
+/**
+ * 启动 TUI 模式：
+ * 1. 加载 profile，初始化 Agent
+ * 2. 启动 TuiServer（WS）
+ * 3. spawn bun 运行 transport-tui
+ * 4. 等待 TUI 退出后清理
+ */
+async function runTui() {
+  const profileName = getFlag('--profile') ?? 'default';
+
+  const profilesDir = resolveProfileDir();
+  const profilePath = join(profilesDir, profileName, 'config.yaml');
+
+  if (!existsSync(profilePath)) {
+    console.error(`eden: profile "${profileName}" not found at ${profilePath}`);
+    process.exit(1);
+  }
+
+  const profile = ConfigLoader.loadProfile(profilePath);
+  const profileDir = join(profilesDir, profileName);
+
+  // 初始化 Agent
+  const debugChannel = new DebugChannel();
+  const hookPipeline = new HookPipeline();
+  const builtinPlugins = new Map<string, () => any>();
+  builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
+  builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
+  const pluginManager = new PluginManager(debugChannel, builtinPlugins);
+
+  for (const entry of profile.plugins) {
+    try {
+      await pluginManager.load(entry.name, entry.config ?? {}, profileDir);
+      await pluginManager.enable(entry.name);
+    } catch (err) {
+      console.warn(`[eden] plugin "${entry.name}" load failed:`, (err as Error).message);
+    }
+  }
+
+  pluginManager.getPlugins().forEach((plugin) => {
+    hookPipeline.register(plugin);
+  });
+
+  const provider = new OpenAIProvider(profile.agent.model);
+  const assembler = new SystemPromptAssembler();
+  const agent = new Agent({
+    pluginManager, provider, hookPipeline, debugChannel,
+    systemPromptAssembler: assembler,
+    persona: profile.agent.system.persona,
+    model: profile.agent.model.model,
+  });
+
+  // 启动 TuiServer（自动分配端口）
+  const server = new TuiServer();
+  await server.start(agent);
+
+  // 解析 transport-tui 入口路径
+  // 从当前文件路径推断：packages/transport-cli/src/eden.tsx → packages/transport-tui/eden-tui.tsx
+  const currentFile = new URL('.', import.meta.url).pathname;
+  const tuiEntry = join(currentFile, '..', '..', 'transport-tui', 'eden-tui.tsx');
+  const bunPath = process.env.BUN_PATH || 'bun';
+
+  console.log(`[eden] 启动 TUI (bun)...`);
+  const child = spawn(bunPath, [tuiEntry, '--port', String(server.port)], {
+    stdio: 'inherit',
+    env: { ...process.env },
+  });
+
+  // 等待 TUI 退出
+  await new Promise<void>((resolve) => {
+    child.on('exit', (code) => {
+      console.log(`[eden] TUI 退出 (code: ${code})`);
+      resolve();
+    });
+    child.on('error', (err) => {
+      console.error(`[eden] TUI 启动失败:`, err.message);
+      resolve();
+    });
+  });
+
+  // 清理
+  server.stop();
+  process.exit(0);
+}
+
+// ==================== SERVER 模式（HTTP + Web UI） ====================
+
+/**
+ * 启动 HTTP server 模式：
+ * 1. 加载 profile，初始化 Agent
+ * 2. 启动 TuiServer（HTTP + WS，端口 3000）
+ * 3. 打开浏览器
+ * 4. 等待 Ctrl+C 退出
+ */
+async function runServer() {
+  const profileName = getFlag('--profile') ?? 'default';
+  const port = parseInt(getFlag('--port') ?? '3000', 10);
+
+  const profilesDir = resolveProfileDir();
+  const profilePath = join(profilesDir, profileName, 'config.yaml');
+
+  if (!existsSync(profilePath)) {
+    console.error(`eden: profile "${profileName}" not found at ${profilePath}`);
+    process.exit(1);
+  }
+
+  const profile = ConfigLoader.loadProfile(profilePath);
+  const profileDir = join(profilesDir, profileName);
+
+  // 初始化 Agent
+  const debugChannel = new DebugChannel();
+  const hookPipeline = new HookPipeline();
+  const builtinPlugins = new Map<string, () => any>();
+  builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
+  builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
+  const regDebug = () => createDebugPanelPlugin();
+  builtinPlugins.set('@eden/plugin-debug-panel', regDebug);
+  const pluginManager = new PluginManager(debugChannel, builtinPlugins);
+
+  for (const entry of profile.plugins) {
+    try {
+      await pluginManager.load(entry.name, entry.config ?? {}, profileDir);
+      await pluginManager.enable(entry.name);
+    } catch (err) {
+      console.warn(`[eden] plugin "${entry.name}" load failed:`, (err as Error).message);
+    }
+  }
+
+  // 加载 debug-panel 插件（Web UI 调试页通过 WS :18888 连接）
+  const debugKey = '@eden/plugin-debug-panel';
+  if (!pluginManager.getPlugins().has(debugKey)) {
+    await pluginManager.load(debugKey, {}, profileDir);
+  }
+  await pluginManager.enable(debugKey);
+  const debugPlugin = pluginManager.getPlugins().get(debugKey);
+  const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18888;
+
+  pluginManager.getPlugins().forEach((plugin) => {
+    hookPipeline.register(plugin);
+  });
+
+  const provider = new OpenAIProvider(profile.agent.model);
+  const assembler = new SystemPromptAssembler();
+  const agent = new Agent({
+    pluginManager, provider, hookPipeline, debugChannel,
+    systemPromptAssembler: assembler,
+    persona: profile.agent.system.persona,
+    model: profile.agent.model.model,
+  });
+
+  // 启动 TuiServer（HTTP + WS）
+  const server = new TuiServer({ port });
+  await server.start(agent);
+
+  console.log(`\n  🌐 http://localhost:${port}/api/chat`);
+  console.log(`  🔍 Debug WS :${DEBUG_PORT}`);
+  console.log(`  开发时: cd packages/transport-web && pnpm dev\n`);
+  console.log('  Ctrl+C 停止\n');
+
+  // 等待 Ctrl+C
+  await new Promise<void>((resolve) => {
+    process.on('SIGINT', () => {
+      console.log('\n[eden] 关闭中...');
+      server.stop();
+      resolve();
+    });
+  });
+
+  process.exit(0);
 }
 
 // ==================== DRY-RUN 模式 ====================

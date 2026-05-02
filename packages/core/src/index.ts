@@ -39,3 +39,4 @@ export { ConfigLoader } from './config.js';
 export { DebugChannel } from './debug-channel.js';
 export { SystemPromptAssembler } from './system-prompt.js';
 export { OpenAIProvider, estimateTokens, estimateCost } from './provider.js';
+export { TuiServer } from './tui-server.js';

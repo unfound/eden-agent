@@ -297,8 +297,8 @@ export class Agent {
             });
           }
 
-          // 工具执行完后，再调一次 LLM
-          const secondResponse = await provider.chat(llmMessages);
+          // 工具执行完后，再调一次 LLM（需要传 tools，否则模型不知道怎么继续）
+          const secondResponse = await provider.chat(llmMessages, toolDefs.length > 0 ? toolDefs : undefined);
           const secondChoice = secondResponse.choices[0];
           fullText = secondChoice.message.content ?? '';
 

@@ -1,1 +1,0 @@
-{"version":3,"file":"system-prompt.d.ts","sourceRoot":"","sources":["system-prompt.ts"],"names":[],"mappings":"AAAA;;;;;GAKG;AAEH,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,YAAY,CAAC;AAEjD,qBAAa,qBAAqB;IAChC;;;;;;;OAOG;IACH,QAAQ,CAAC,GAAG,EAAE,cAAc,GAAG,MAAM;IAuBrC;;;OAGG;IACH,gBAAgB,CAAC,GAAG,EAAE,cAAc,EAAE,aAAa,EAAE,GAAG,CAAC,MAAM,EAAE,MAAM,CAAC,GAAG,IAAI;CAahF"}

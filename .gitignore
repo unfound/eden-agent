@@ -3,3 +3,8 @@ node_modules/
 dist/
 .env
 *.log
+# build artifacts that leak into src/ when outDir is misconfigured
+packages/*/src/*.js
+packages/*/src/*.d.ts
+packages/*/src/*.js.map
+packages/*/src/*.d.ts.map

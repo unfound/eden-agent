@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react"
 import { fetchLogs, fetchLogDetail, fetchDebugConfig, deleteLog, type LogSummary, type LogDetail, type DebugConfig } from "@/lib/api"
-import { TrashIcon, CopyIcon, CheckIcon, FolderOpenIcon } from "lucide-react"
+import { TrashIcon, CopyIcon, CheckIcon } from "lucide-react"
 
 export default function DebugPage() {
   const [logs, setLogs] = useState<LogSummary[]>([])
@@ -49,14 +49,6 @@ export default function DebugPage() {
 
   const selectedLog = logs.find(l => l.id === selectedLogId)
 
-  // 复制日志目录
-  const copyLogDir = () => {
-    if (!config?.logDir) return
-    navigator.clipboard.writeText(config.logDir)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-
   // 删除日志
   const handleDelete = async (logId: string) => {
     await deleteLog(logId)
@@ -94,18 +86,6 @@ export default function DebugPage() {
         )}
 
         <div className="ml-auto flex items-center gap-2">
-          {/* 日志目录 */}
-          {config && (
-            <button
-              onClick={copyLogDir}
-              className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-              title="点击复制日志目录路径"
-            >
-              <FolderOpenIcon className="size-3.5" />
-              <span className="max-w-[200px] truncate font-mono">{config.logDir}</span>
-              {copied ? <CheckIcon className="size-3.5 text-green-500" /> : <CopyIcon className="size-3.5" />}
-            </button>
-          )}
 
           {/* 删除当前日志 */}
           {selectedLogId && (
@@ -160,11 +140,28 @@ export default function DebugPage() {
             ) : (
               <div className="space-y-3">
                 <Section title="请求信息">
-                  <Row label="Log ID" value={detail.id} mono />
+                  <Row label="日志ID" value={detail.id} mono />
                   <Row label="时间" value={new Date(detail.timestamp).toLocaleString()} />
                   <Row label="Model" value={detail.rawResponse?.model ?? "—"} />
                   <Row label="Finish" value={detail.rawResponse?.finishReason ?? "—"} />
                   <Row label="User Message" value={detail.userMessage} />
+                  {config && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="flex-shrink-0 text-muted-foreground text-xs">文件路径</span>
+                      <code className="min-w-0 flex-1 truncate font-mono text-xs">{config.logDir}/{detail.id}.json</code>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${config.logDir}/${detail.id}.json`)
+                          setCopied(true)
+                          setTimeout(() => setCopied(false), 1500)
+                        }}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                        title="复制文件路径"
+                      >
+                        {copied ? <CheckIcon className="size-3.5 text-green-500" /> : <CopyIcon className="size-3.5" />}
+                      </button>
+                    </div>
+                  )}
                 </Section>
 
                 <Section title="Token 用量">

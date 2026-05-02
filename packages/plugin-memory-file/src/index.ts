@@ -199,21 +199,23 @@ function createPlugin(): EdenPlugin {
       async onPreProcess(pc: ProcessContext) {
         if (!ctx) return;
         const content = readMemory();
-        if (!content.trim()) return;
 
-        const tokens = estimateTokens(content);
-        // 截断到最大 token 数
-        let injected = content;
-        if (tokens > cfg.maxTokens!) {
-          // 保留前面的内容（重要信息通常在前面）
-          const maxChars = cfg.maxTokens! * 3.5;
-          injected = content.slice(0, maxChars) + '\n...(已截断)';
+        // 无论 MEMORY.md 是否为空，都注入工具使用提示
+        let memoryBlock = '';
+        if (content.trim()) {
+          const tokens = estimateTokens(content);
+          memoryBlock = content;
+          // 截断到最大 token 数
+          if (tokens > cfg.maxTokens!) {
+            const maxChars = cfg.maxTokens! * 3.5;
+            memoryBlock = content.slice(0, maxChars) + '\n...(已截断)';
+          }
         }
 
         pc.injectedContext.push({
           source: 'memory',
-          content: `## 你的记忆\n你有一个记忆文件（MEMORY.md），可以通过 read_memory / add_memory / delete_memory / search_memory 工具来管理它。\n请在对话开始时调用 read_memory 了解上下文，在对话中适时调用 add_memory 记住重要信息。\n\n${injected}`,
-          tokens: Math.min(tokens, cfg.maxTokens!),
+          content: `## 你的记忆\n你有一个记忆文件（MEMORY.md），可以通过 read_memory / add_memory / delete_memory / search_memory 工具来管理它。\n请在对话开始时调用 read_memory 了解上下文，在对话中适时调用 add_memory 记住重要信息。\n\n${memoryBlock || '(记忆文件为空)'}`,
+          tokens: memoryBlock ? Math.min(estimateTokens(memoryBlock), cfg.maxTokens!) : 0,
         });
       },
     },

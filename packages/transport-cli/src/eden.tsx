@@ -10,7 +10,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { render, useInput, Box, Text } from 'ink';
-import { Agent, HookPipeline, PluginManager, DebugChannel, SystemPromptAssembler, OpenAIProvider, TuiServer } from '@eden/core';
+import { Agent, HookPipeline, PluginManager, DebugChannel, SystemPromptAssembler, OpenAIProvider, EdenServer } from '@eden/core';
 import createMemoryFilePlugin from '@eden/plugin-memory-file';
 import { createPlugin as createDebugPanelPlugin } from '@eden/plugin-debug-panel';
 import { ConfigLoader } from '@eden/core';
@@ -78,10 +78,10 @@ async function runChat() {
   const builtinPlugins = new Map<string, () => any>();
   builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
   builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
+  const pluginManager = new PluginManager(debugChannel, builtinPlugins);
   const regDebug = () => createDebugPanelPlugin();
   builtinPlugins.set('@eden/plugin-debug-panel', regDebug);
 
-  const pluginManager = new PluginManager(debugChannel, builtinPlugins);
 
   for (const entry of profile.plugins) {
     try {
@@ -140,7 +140,7 @@ async function runChat() {
 /**
  * 启动 TUI 模式：
  * 1. 加载 profile，初始化 Agent
- * 2. 启动 TuiServer（WS）
+ * 2. 启动 EdenServer（WS）
  * 3. spawn bun 运行 transport-tui
  * 4. 等待 TUI 退出后清理
  */
@@ -188,8 +188,8 @@ async function runTui() {
     model: profile.agent.model.model,
   });
 
-  // 启动 TuiServer（自动分配端口）
-  const server = new TuiServer();
+  // 启动 EdenServer（自动分配端口）
+  const server = new EdenServer();
   await server.start(agent);
 
   // 解析 transport-tui 入口路径
@@ -226,7 +226,7 @@ async function runTui() {
 /**
  * 启动 HTTP server 模式：
  * 1. 加载 profile，初始化 Agent
- * 2. 启动 TuiServer（HTTP + WS，端口 3000）
+ * 2. 启动 EdenServer（HTTP + WS，端口 3000）
  * 3. 打开浏览器
  * 4. 等待 Ctrl+C 退出
  */
@@ -251,27 +251,7 @@ async function runServer() {
   const builtinPlugins = new Map<string, () => any>();
   builtinPlugins.set('memory-file', () => createMemoryFilePlugin());
   builtinPlugins.set('@eden/plugin-memory-file', () => createMemoryFilePlugin());
-  const regDebug = () => createDebugPanelPlugin();
-  builtinPlugins.set('@eden/plugin-debug-panel', regDebug);
   const pluginManager = new PluginManager(debugChannel, builtinPlugins);
-
-  for (const entry of profile.plugins) {
-    try {
-      await pluginManager.load(entry.name, entry.config ?? {}, profileDir);
-      await pluginManager.enable(entry.name);
-    } catch (err) {
-      console.warn(`[eden] plugin "${entry.name}" load failed:`, (err as Error).message);
-    }
-  }
-
-  // 加载 debug-panel 插件（Web UI 调试页通过 WS :18888 连接）
-  const debugKey = '@eden/plugin-debug-panel';
-  if (!pluginManager.getPlugins().has(debugKey)) {
-    await pluginManager.load(debugKey, {}, profileDir);
-  }
-  await pluginManager.enable(debugKey);
-  const debugPlugin = pluginManager.getPlugins().get(debugKey);
-  const DEBUG_PORT = (debugPlugin as any)?.getDebugPort?.() ?? 18888;
 
   pluginManager.getPlugins().forEach((plugin) => {
     hookPipeline.register(plugin);
@@ -286,12 +266,12 @@ async function runServer() {
     model: profile.agent.model.model,
   });
 
-  // 启动 TuiServer（HTTP + WS）
-  const server = new TuiServer({ port });
+  // 启动 EdenServer（HTTP + WS）
+  const server = new EdenServer({ port });
   await server.start(agent);
 
   console.log(`\n  🌐 http://localhost:${port}/api/chat`);
-  console.log(`  🔍 Debug WS :${DEBUG_PORT}`);
+
   console.log(`  开发时: cd packages/transport-web && pnpm dev\n`);
   console.log('  Ctrl+C 停止\n');
 

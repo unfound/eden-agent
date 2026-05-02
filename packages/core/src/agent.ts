@@ -43,6 +43,11 @@ export class Agent {
     this.options = options;
   }
 
+  /** 暴露 debugChannel 供 EdenServer 订阅调试事件 */
+  get debugChannel(): DebugChannel {
+    return this.options.debugChannel;
+  }
+
   /**
    * 单轮对话（非流式）
    */

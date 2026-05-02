@@ -30,8 +30,10 @@ import {
   MessagePrimitive,
   SuggestionPrimitive,
   ThreadPrimitive,
+  useAui,
   useAuiState,
 } from "@assistant-ui/react";
+import { useEffect, useRef } from "react";
 import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, MoreHorizontalIcon, PencilIcon, RefreshCwIcon, SquareIcon } from "lucide-react"
 import type { FC } from "react"
 
@@ -45,6 +47,7 @@ export const Thread: FC = () => {
         ["--composer-padding" as string]: "10px",
       }}
     >
+      <AutoTitle />
       <ThreadPrimitive.Viewport
         data-slot="aui_thread-viewport"
         className="flex flex-1 flex-col overflow-y-auto scroll-smooth"
@@ -98,6 +101,44 @@ const ThreadScrollToBottom: FC = () => {
       </TooltipIconButton>
     </ThreadPrimitive.ScrollToBottom>
   );
+};
+
+/** 自动设置会话标题：第一条用户消息发出时，取其内容作为标题 */
+const AutoTitle: FC = () => {
+  const aui = useAui();
+  const messages = useAuiState((s) => s.thread.messages);
+  const titleState = useAuiState((s) => s.threadListItem.title);
+  const threadId = useAuiState((s) => s.threadListItem.id);
+  const lastThreadId = useRef<string | null>(null);
+
+  useEffect(() => {
+    // 切换会话时重置
+    if (lastThreadId.current !== threadId) {
+      lastThreadId.current = threadId;
+    }
+    if (titleState) return;
+
+    // 找第一条用户消息
+    const firstUserMsg = messages.find((m) => m.role === "user");
+    if (!firstUserMsg) return;
+
+    // 提取文本内容（可能在 parts 或 content 中）
+    let text = "";
+    if (Array.isArray(firstUserMsg.content)) {
+      const textPart = firstUserMsg.content.find((p: any) => p.type === "text");
+      text = textPart?.text ?? "";
+    } else if (typeof firstUserMsg.content === "string") {
+      text = firstUserMsg.content;
+    }
+
+    if (!text.trim()) return;
+
+    // 截取前 30 个字符作为标题
+    const title = text.trim().slice(0, 30) + (text.trim().length > 30 ? "..." : "");
+    aui.threadListItem().rename(title);
+  }, [messages, titleState, aui, threadId]);
+
+  return null;
 };
 
 const ThreadWelcome: FC = () => {

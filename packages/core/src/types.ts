@@ -149,8 +149,8 @@ export interface ToolDefinition {
 }
 
 export interface ModelProvider {
-  chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse>;
-  chatStream(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<{
+  chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[], debug?: { channel: { emit(type: string, requestId: string, data: Record<string, unknown>): void }; requestId: string }): Promise<ChatCompletionResponse>;
+  chatStream(messages: ChatCompletionMessage[], tools?: ToolDefinition[], debug?: { channel: { emit(type: string, requestId: string, data: Record<string, unknown>): void }; requestId: string }): Promise<{
     textStream: AsyncGenerator<string, void, void>;
     usage: Promise<{ in: number; out: number; total: number }>;
   }>;
@@ -161,6 +161,8 @@ export interface ModelProvider {
 export type DebugEventType =
   | 'request_start'
   | 'request_end'
+  | 'raw_request'
+  | 'raw_response'
   | 'hook_called'
   | 'tool_called'
   | 'tool_result'

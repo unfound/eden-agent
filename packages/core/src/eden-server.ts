@@ -185,7 +185,6 @@ export class EdenServer {
       res.write(`data: ${JSON.stringify({ type: 'finish', finishReason: 'stop' })}\n\n`);
       res.end();
     } catch (err) {
-      log.rawResponse = { content: '', finishReason: 'error' };
       this.saveLog(log);
 
       res.write(`data: ${JSON.stringify({ type: 'error', errorText: (err as Error).message })}\n\n`);
@@ -268,8 +267,32 @@ export class EdenServer {
       case 'request_start':
         log.systemPrompt = (d.systemPrompt as string) ?? '';
         log.injectedContext = (d.injectedContext as RequestLog['injectedContext']) ?? [];
-        log.rawRequest = (d.rawRequest as RequestLog['rawRequest']) ?? [];
         break;
+      case 'raw_request': {
+        // Provider 层记录的实际 HTTP body（含 tools、messages 等完整字段）
+        const body = d.body as Record<string, unknown> | undefined;
+        if (body) {
+          log.rawRequest = (body.messages as RequestLog['rawRequest']) ?? log.rawRequest;
+          // 把 tools 定义也存到 rawRequest 的元数据里，方便前端展示
+          if (body.tools) {
+            (log as any).rawTools = body.tools;
+          }
+        }
+        break;
+      }
+      case 'raw_response': {
+        // Provider 层记录的 LLM 实际返回
+        const body = d.body as Record<string, unknown> | undefined;
+        if (body) {
+          const choice = (body.choices as any[])?.[0];
+          log.rawResponse = {
+            content: (choice?.message?.content as string) ?? '',
+            finishReason: choice?.finish_reason as string,
+            model: body.model as string,
+          };
+        }
+        break;
+      }
       case 'tool_called':
         log.toolCalls.push({
           name: (d.name as string) ?? '',
@@ -285,7 +308,8 @@ export class EdenServer {
         break;
       }
       case 'request_end':
-        log.rawResponse = (d.rawResponse as RequestLog['rawResponse']) ?? log.rawResponse;
+        // response + usage 由 agent 层提供
+        if (d.usage) log.tokenUsage = d.usage as RequestLog['tokenUsage'];
         break;
       case 'context_injected':
         log.injectedContext.push(

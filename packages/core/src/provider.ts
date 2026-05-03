@@ -10,7 +10,7 @@ import type { ChatCompletionMessage, ChatCompletionResponse, ModelConfig, ModelP
 export class OpenAIProvider implements ModelProvider {
   constructor(private config: ModelConfig) {}
 
-  async chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[]): Promise<ChatCompletionResponse> {
+  async chat(messages: ChatCompletionMessage[], tools?: ToolDefinition[], debug?: { channel: any; requestId: string }): Promise<ChatCompletionResponse> {
     const { baseURL, model, apiKey } = this.config;
 
     const body: Record<string, unknown> = {
@@ -21,6 +21,11 @@ export class OpenAIProvider implements ModelProvider {
       ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
     };
     if (tools && tools.length > 0) body.tools = tools;
+
+    // 记录实际发送给 LLM 的完整请求体
+    if (debug) {
+      debug.channel.emit('raw_request', debug.requestId, { body });
+    }
 
     const response = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -36,7 +41,14 @@ export class OpenAIProvider implements ModelProvider {
       throw new Error(`ModelProvider: HTTP ${response.status} — ${text}`);
     }
 
-    return response.json() as Promise<ChatCompletionResponse>;
+    const result = (await response.json()) as ChatCompletionResponse;
+
+    // 记录 LLM 实际返回的完整响应
+    if (debug) {
+      debug.channel.emit('raw_response', debug.requestId, { body: result });
+    }
+
+    return result;
   }
 
   /**
@@ -45,7 +57,8 @@ export class OpenAIProvider implements ModelProvider {
    */
   async chatStream(
     messages: ChatCompletionMessage[],
-    tools?: ToolDefinition[]
+    tools?: ToolDefinition[],
+    debug?: { channel: any; requestId: string }
   ): Promise<{
     textStream: AsyncGenerator<string, void, void>;
     usage: Promise<{ in: number; out: number; total: number }>;
@@ -61,6 +74,11 @@ export class OpenAIProvider implements ModelProvider {
       ...(this.config.temperature !== undefined ? { temperature: this.config.temperature } : {}),
     };
     if (tools && tools.length > 0) body.tools = tools;
+
+    // 记录实际发送给 LLM 的完整请求体
+    if (debug) {
+      debug.channel.emit('raw_request', debug.requestId, { body });
+    }
 
     const response = await fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',

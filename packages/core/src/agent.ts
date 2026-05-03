@@ -131,17 +131,19 @@ export class Agent {
     debugChannel.emit('request_start', requestId, {
       systemPrompt,
       injectedContext: ctx.injectedContext,
-      rawRequest: llmMessages,
     });
 
     if (opts?.dryRun) {
       return { response: '', usage: ctx.tokenUsage, context: ctx };
     }
 
+    // 传 debug 给 provider，由 provider 层记录实际 HTTP 请求
+    const debugRef = { channel: debugChannel, requestId };
+
     // Tool call loop
     let assistantMessage = '';
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const response = await provider.chat(llmMessages, toolDefs.length > 0 ? toolDefs : undefined);
+      const response = await provider.chat(llmMessages, toolDefs.length > 0 ? toolDefs : undefined, debugRef);
       const choice = response.choices[0];
 
       if (response.usage) {
@@ -187,7 +189,6 @@ export class Agent {
       response: assistantMessage,
       usage: ctx.tokenUsage,
       messages: ctx.messages,
-      rawResponse: { content: assistantMessage, finishReason: 'stop' },
     });
 
     await hookPipeline.onPostProcess(ctx);
@@ -232,12 +233,15 @@ export class Agent {
     debugChannel.emit('request_start', requestId, {
       systemPrompt,
       injectedContext: ctx.injectedContext,
-      rawRequest: llmMessages,
     });
+
+    // 传 debug 给 provider，由 provider 层记录实际 HTTP 请求
+    const debugRef = { channel: debugChannel, requestId };
 
     const chatStreamResult = await provider.chatStream(
       llmMessages,
-      toolDefs.length > 0 ? toolDefs : undefined
+      toolDefs.length > 0 ? toolDefs : undefined,
+      debugRef
     );
     const { textStream, usage: streamUsage } = chatStreamResult;
     // toolCalls 由 provider 流式收集，流结束后通过 getter 获取
@@ -342,7 +346,6 @@ export class Agent {
         response: fullText,
         usage: ctx.tokenUsage,
         messages: ctx.messages,
-        rawResponse: { content: fullText, finishReason: 'stop' },
       });
 
       try {

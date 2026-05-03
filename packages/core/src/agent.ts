@@ -52,6 +52,11 @@ export class Agent {
     return this.options.debugChannel;
   }
 
+  /** 暴露模型名称供日志记录 */
+  get model(): string {
+    return this.options.model;
+  }
+
   // ── 工具收集与执行 ────────────────────────────────
 
   /** 从所有已启用插件收集 tools，转换为 LLM 格式 */
@@ -320,6 +325,12 @@ export class Agent {
             arguments: tc.function.arguments,
           })));
         }
+      }
+
+      // tool loop 结束后，yield 最终回复给 SSE 流
+      if (fullText) {
+        yield '';   // 重置服务端 prevLen
+        yield fullText;
       }
 
       ctx.messages.push({ role: 'user', content: userMessage });

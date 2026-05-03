@@ -57,6 +57,45 @@ function createPlugin(): EdenPlugin {
   // ── Tools ────────────────────────────────────────
 
   const tools: Record<string, CoreTool> = {
+    update_memory: {
+      description: '更新记忆文件中的一条已有记忆。当用户更正信息、信息过时、或发现重复/冲突时使用。用 pattern 匹配要替换的行，用 new_content 替换。',
+      parameters: {
+        type: 'object',
+        properties: {
+          pattern: {
+            type: 'string',
+            description: '要匹配并替换的文本片段（会匹配包含该文本的行）',
+          },
+          new_content: {
+            type: 'string',
+            description: '替换后的新内容（不含开头的 "- "）',
+          },
+        },
+        required: ['pattern', 'new_content'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const pattern = String(args.pattern ?? '').trim();
+        const newContent = String(args.new_content ?? '').trim();
+        if (!pattern || !newContent) return 'Error: pattern 和 new_content 不能为空';
+
+        const memory = readMemory();
+        if (!memory) return 'Error: 记忆文件为空';
+
+        const lines = memory.split('\n');
+        let replaced = false;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(pattern) && lines[i].startsWith('- ')) {
+            lines[i] = `- ${newContent}`;
+            replaced = true;
+          }
+        }
+
+        if (!replaced) return `未找到包含 "${pattern}" 的记忆条目`;
+        writeMemory(lines.join('\n'));
+        return `已更新: "${pattern}" → "${newContent}"`;
+      },
+    },
+
     read_memory: {
       description: '读取 Agent 的记忆文件（MEMORY.md）。在对话开始时调用以了解之前的上下文。',
       parameters: {
@@ -214,9 +253,11 @@ function createPlugin(): EdenPlugin {
 
         const MEMORY_TOOL_PROMPT = `## 记忆系统
 以下是你的长期记忆。你拥有持久记忆能力——用户的偏好、事实、重要决定都会被记住。
-当用户告诉你个人信息（名字、偏好、习惯等）或重要事实时，你必须立即调用 add_memory 将其保存。
-当信息过时或被用户更正时，调用 delete_memory 删除旧记录。
-可用工具：add_memory / delete_memory / search_memory / read_memory`;
+当用户告诉你新的个人信息时，先用 search_memory 搜索是否已有相关记忆：
+- 如果没有，调用 add_memory 新增
+- 如果已有但需要更正（如改名、纠正事实），调用 update_memory 替换旧条目
+- 如果有重复/冲突的记忆，调用 update_memory 合并或删除
+可用工具：add_memory / update_memory / delete_memory / search_memory / read_memory`;
 
         pc.injectedContext.push({
           source: 'memory',

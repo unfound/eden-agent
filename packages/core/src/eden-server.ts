@@ -23,6 +23,7 @@ interface RequestLog {
   id: string;
   timestamp: number;
   userMessage: string;
+  model: string;
   systemPrompt: string;
   injectedContext: Array<{ source: string; content: string; tokens: number }>;
   rawRequest: Array<Record<string, unknown>>;
@@ -140,6 +141,7 @@ export class EdenServer {
       id: logId,
       timestamp: Date.now(),
       userMessage: text,
+      model: this.agent.model,
       systemPrompt: '',
       injectedContext: [],
       rawRequest: [],
@@ -173,7 +175,7 @@ export class EdenServer {
 
       const usage = await usagePromise;
       log.tokenUsage = usage;
-      log.rawResponse = { content: fullText, finishReason: 'stop' };
+      // rawResponse 由 request_end 事件设置（包含 tool loop 后的最终回复）
       unsub();
 
       // 保存日志
@@ -207,7 +209,7 @@ export class EdenServer {
             id: data.id,
             timestamp: data.timestamp,
             userMessage: data.userMessage,
-            model: data.rawResponse?.model,
+            model: data.model ?? data.rawResponse?.model,
             tokenIn: data.tokenUsage.in,
             tokenOut: data.tokenUsage.out,
             toolCallCount: data.toolCalls.length,
@@ -282,6 +284,9 @@ export class EdenServer {
         }
         break;
       }
+      case 'request_end':
+        log.rawResponse = (d.rawResponse as RequestLog['rawResponse']) ?? log.rawResponse;
+        break;
       case 'context_injected':
         log.injectedContext.push(
           ...((d.injections as RequestLog['injectedContext']) ?? [])

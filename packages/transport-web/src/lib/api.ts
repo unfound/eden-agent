@@ -18,6 +18,7 @@ export interface LogDetail {
   id: string
   timestamp: number
   userMessage: string
+  model?: string
   systemPrompt: string
   injectedContext: Array<{ source: string; content: string; tokens: number }>
   rawRequest: Array<Record<string, unknown>>

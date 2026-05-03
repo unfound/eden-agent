@@ -141,12 +141,8 @@ export default function DebugPage() {
               <div className="space-y-3">
                 <Section title="请求信息">
                   <Row label="日志ID" value={detail.id} mono />
-                  <Row label="时间" value={new Date(detail.timestamp).toLocaleString()} />
-                  <Row label="Model" value={detail.rawResponse?.model ?? "—"} />
-                  <Row label="Finish" value={detail.rawResponse?.finishReason ?? "—"} />
-                  <Row label="User Message" value={detail.userMessage} />
                   {config && (
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center gap-2 py-0.5">
                       <span className="flex-shrink-0 text-muted-foreground text-xs">文件路径</span>
                       <code className="min-w-0 flex-1 truncate font-mono text-xs">{config.logDir}/{detail.id}.json</code>
                       <button
@@ -162,6 +158,8 @@ export default function DebugPage() {
                       </button>
                     </div>
                   )}
+                  <Row label="模型" mono value={detail.model ?? detail.rawResponse?.model ?? "—"} />
+                  <Row label="时间" mono value={new Date(detail.timestamp).toLocaleString()} />
                 </Section>
 
                 <Section title="Token 用量">
